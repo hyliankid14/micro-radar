@@ -69,3 +69,4 @@ manifest.mf
 nbbuild.xml
 nbproject
 .pio
+.vscode
