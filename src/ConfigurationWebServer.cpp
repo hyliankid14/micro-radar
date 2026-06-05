@@ -1,6 +1,10 @@
 #include "ConfigurationWebServer.h"
 
+#include <ESPmDNS.h>
+
 void ConfigurationWebServer::Initialise() {
+    MDNS.begin("microradar"); // hostname resolution for ip
+
     // Serve the config page
     server.on("/", HTTP_GET,
         [&](AsyncWebServerRequest* request) {

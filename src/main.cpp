@@ -1,11 +1,11 @@
 #include <Arduino.h>
 #include <WiFiManager.h>
 #include <cmath>
-#include <ESPmDNS.h>
 
 #include "LGFX.h"
 #include "WiFiManagerHelpers.h"
 #include "ConfigurationWebServer.h"
+#include "HttpRequestManager.h"
 
 #define SCREEN_SIZE 240
 
@@ -13,8 +13,8 @@ LGFX tft;
 LGFX_Sprite backbuffer(&tft);
 
 WiFiManager wm;
-
 ConfigurationWebServer configServer;
+HttpRequestManager http;
 
 void setup()
 {
@@ -38,8 +38,11 @@ void setup()
   wm.autoConnect(WiFiManagerHelpers::WiFiManagerName);
 
   // begin background server for configuration
-  MDNS.begin("microradar"); // hostname resolution for ip
   configServer.Initialise();
+
+  // test request
+  String response = http.Get("https://webhook.site/733f63c6-73d1-4d5b-8c51-b3877fbbd595");
+  Serial.println(response);
 }
 
 void loop()
