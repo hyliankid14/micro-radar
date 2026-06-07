@@ -93,6 +93,7 @@ void loop()
     JsonDocument doc;
     deserializeJson(doc, airplaneStateResponse);
     auto aircraft = JsonParser::ParseArray<Aircraft>(doc["states"]);
+    now = millis(); // override with post-parse timestamp
 
     for (auto& ac : aircraft) {
       trackedAircraft[ac.icao24] = { ac, now };
