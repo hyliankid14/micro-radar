@@ -7,9 +7,20 @@
 
 void AircraftManager::Initialise()
 {
+    // Get centre point + radius
     lat = std::stod(configServer.GetStoredString("latitude").c_str());
     lon = std::stod(configServer.GetStoredString("longitude").c_str());
     rad = std::stod(configServer.GetStoredString("radius").c_str());
+
+    // Calculate how often we can call OpenSky API before being rate limited
+    const unsigned int msPerDay = 24 * 60 * 60 * 1000;
+    int dailyRequestBudget = 400 - 5; // non-authed tokens minus buffer
+
+    String token = authHandler.GetValidToken(configServer.GetStoredString("opensky-id"), configServer.GetStoredString("opensky-secret"));
+    if (!token.isEmpty())
+        dailyRequestBudget = 4000 - 5; // authed tokens minus buffer
+
+    fetchInterval = msPerDay / dailyRequestBudget;
 }
 
 void AircraftManager::Update()
