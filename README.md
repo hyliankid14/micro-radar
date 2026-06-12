@@ -48,7 +48,7 @@ Further info on what to do with the account is in the usage section.
 
 Once you've got all the parts, assembly typically takes 1-2 hours (excluding print time).
 
-**I strongly recommend reading the [Usage](#usage) section before you start assembly.** It'll help with troubleshooting if anything goes wrong. You might want to test the firmware before sealing everything up.
+**I strongly recommend reading the [Usage](#usage) section before you start assembly.** It'll help with troubleshooting if anything goes wrong. You might want to test the firmware and your hardware before closing everything up.
 
 ### Step 1: 3D Print
 
