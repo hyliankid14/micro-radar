@@ -1,11 +1,54 @@
 #include "AircraftManager.h"
 #include <Preferences.h>
 #include <time.h>
+#include <algorithm>
 
 constexpr int SCREEN_SIZE = 240;
 constexpr int SCREEN_SIZE_DIV_2 = (SCREEN_SIZE / 2);
 
 #include <ArduinoJson.h>
+#include "models/Aircraft.h"
+
+static int DrawWrappedText(LGFX_Sprite& buf, int x, int y, const String& text, int maxWidth, int lineHeight)
+{
+    if (text.isEmpty()) return y;
+
+    String remaining = text;
+    bool firstLine = true;
+
+    while (remaining.length() > 0) {
+        if (!firstLine) y += lineHeight;
+        String line = "";
+        int charIndex = 0;
+
+        while (charIndex < remaining.length()) {
+            String testLine = line + remaining.charAt(charIndex);
+            if (buf.textWidth(testLine) > maxWidth) {
+                int lastSpace = line.lastIndexOf(' ');
+                if (lastSpace > 0) {
+                    line = line.substring(0, lastSpace);
+                    remaining = remaining.substring(lastSpace + 1);
+                } else {
+                    remaining = remaining.substring(charIndex);
+                }
+                break;
+            }
+            line = testLine;
+            charIndex++;
+        }
+
+        if (charIndex >= remaining.length()) {
+            buf.drawString(line, x, y);
+            remaining = "";
+        } else {
+            buf.drawString(line, x, y);
+        }
+        firstLine = false;
+    }
+
+    y += lineHeight;
+    return y;
+}
 
 void AircraftManager::Initialise()
 {
@@ -23,9 +66,23 @@ void AircraftManager::Initialise()
     if (!renderText.isEmpty()) displayInfoText = renderText == "true" ? true : false;
     if (!renderTris.isEmpty()) displayTriangles = renderTris == "true" ? true : false;
 
-    // AirLabs free tier: 1,000 requests/month
-    // Fetch every 45 minutes = 960 requests/month (stays within limit)
-    fetchInterval = 2700000;  // 45 minutes in milliseconds
+    constexpr int MS_PER_DAY = 24 * 60 * 60 * 1000;
+    constexpr int ANONYMOUS_TOKENS_PER_DAY = 400;
+    constexpr int AUTHED_TOKENS_PER_DAY = 4000;
+    constexpr int TOKEN_BUFFER = 3;
+    int dailyRequestBudget = ANONYMOUS_TOKENS_PER_DAY - TOKEN_BUFFER;
+
+    const String openskyId = configServer.GetStoredString("opensky-id");
+    const String openskySecret = configServer.GetStoredString("opensky-secret");
+    if (!openskyId.isEmpty() && !openskySecret.isEmpty()) {
+        dailyRequestBudget = AUTHED_TOKENS_PER_DAY - TOKEN_BUFFER;
+        Serial.println("[INIT] OpenSky authenticated — 4000 credits/day");
+    } else {
+        Serial.println("[INIT] OpenSky anonymous — 400 credits/day");
+    }
+
+    fetchInterval = MS_PER_DAY / dailyRequestBudget;
+    Serial.printf("[INIT] Fetch interval: %lums\n", fetchInterval);
 }
 
 void AircraftManager::Draw(LGFX_Sprite& backbuffer)
@@ -164,43 +221,124 @@ String AircraftManager::HitTestAircraft(int tapX, int tapY) const
     return nearestIcao;
 }
 
+bool AircraftManager::FetchFlightDetailAirlabs(const String& icao)
+{
+    const String airlabsKey = configServer.GetStoredString("airlabs-key");
+    if (airlabsKey.isEmpty()) {
+        Serial.println("[DETAIL] Airlabs key not configured — skipping");
+        return false;
+    }
+
+    if (!airlabsManager.updateSingle(icao)) {
+        Serial.println("[DETAIL] Airlabs fetch failed");
+        return false;
+    }
+
+    const auto& airlabsAircraft = airlabsManager.getAircraft();
+    
+    // Normalize icao to lowercase for consistent map lookup
+    String lookupIcao = icao;
+    lookupIcao.toLowerCase();
+    
+    auto it = airlabsAircraft.find(lookupIcao);
+    if (it == airlabsAircraft.end()) {
+        Serial.println("[DETAIL] Airlabs returned no data for icao");
+        return false;
+    }
+
+    const AirLabsAircraft& ac = it->second;
+
+    // Get 3-letter IATA airport codes from Airlabs
+    selectedDetail.departureAirport = ac.dep_iata;
+    selectedDetail.arrivalAirport = ac.arr_iata;
+
+    // Resolve IATA codes to full airport names from on-device database
+    if (airportDb) {
+        if (!ac.dep_iata.isEmpty()) {
+            String name = airportDb->getAirportName(ac.dep_iata);
+            if (!name.isEmpty()) {
+                selectedDetail.departureAirportFull = name;
+            }
+        }
+        if (!ac.arr_iata.isEmpty()) {
+            String name = airportDb->getAirportName(ac.arr_iata);
+            if (!name.isEmpty()) {
+                selectedDetail.arrivalAirportFull = name;
+            }
+        }
+    }
+
+    // Departure / arrival times from Airlabs (unix timestamps)
+    selectedDetail.departureTime = ac.dep_time;
+    selectedDetail.arrivalTime = ac.arr_time;
+
+    Serial.printf("[DETAIL] Airlabs loaded for %s: %s -> %s, times=%ld/%ld\n",
+        icao.c_str(), selectedDetail.departureAirport.c_str(), selectedDetail.arrivalAirport.c_str(),
+        selectedDetail.departureTime, selectedDetail.arrivalTime);
+    return true;
+}
+
 void AircraftManager::SelectFlight(const String& icao24)
 {
     selectedIcao = icao24;
     selectedDetail = FlightDetail{};
     
     Serial.printf("[FLIGHT] Selected %s\n", icao24.c_str());
-    
-    auto it = trackedAircraft.find(icao24);
-    if (it != trackedAircraft.end()) {
-        // Get route data from AirLabs cache
-        const auto& airlabsAircraft = airlabsManager.getAircraft();
-        auto airlabsIt = airlabsAircraft.find(icao24);
-        
-        if (airlabsIt != airlabsAircraft.end()) {
-            const AirLabsAircraft& ac = airlabsIt->second;
-            selectedDetail.departureAirport = ac.dep_iata;
-            selectedDetail.arrivalAirport = ac.arr_iata;
-            
-            // Fetch airport names synchronously
-            Serial.println("[FLIGHT] Fetching airport names...");
-            if (!ac.dep_iata.isEmpty()) {
-                auto depInfo = airlabsManager.getAirportInfo(ac.dep_iata);
-                if (!depInfo.name.isEmpty()) {
-                    selectedDetail.departureAirportFull = depInfo.name;
-                }
-            }
-            if (!ac.arr_iata.isEmpty()) {
-                auto arrInfo = airlabsManager.getAirportInfo(ac.arr_iata);
-                if (!arrInfo.name.isEmpty()) {
-                    selectedDetail.arrivalAirportFull = arrInfo.name;
-                }
-            }
-        }
+
+    // Fetch all flight detail (route, airports, times) exclusively from Airlabs
+    // OpenSky is only used for live position data (the radar), not flight detail
+    if (!FetchFlightDetailAirlabs(icao24)) {
+        Serial.println("[FLIGHT] Airlabs detail fetch failed — no route data available");
     }
     
     selectedDetail.loaded = true;
     Serial.println("[FLIGHT] Detail loaded");
+}
+
+bool AircraftManager::FetchSingleAircraftOpenSky(const String& icao)
+{
+    const String token = authHandler.GetValidToken(
+        configServer.GetStoredString("opensky-id"),
+        configServer.GetStoredString("opensky-secret")
+    );
+    if (token.isEmpty()) return false;
+
+    String icaoLower = icao;
+    icaoLower.toLowerCase();
+
+    char url[256];
+    snprintf(url, sizeof(url),
+        "https://opensky-network.org/api/states/all?icao24=%s",
+        icaoLower.c_str());
+
+    HttpResult result = http.Get(url, {}, {{"Authorization", "Bearer " + token}});
+    if (!result.success) {
+        Serial.printf("[REFRESH] OpenSky single fetch failed: %s\n", result.errorMessage.c_str());
+        return false;
+    }
+
+    JsonDocument doc;
+    DeserializationError error = deserializeJson(doc, result.response);
+    if (error) {
+        Serial.printf("[REFRESH] OpenSky parse failed: %s\n", error.c_str());
+        return false;
+    }
+
+    JsonArray states = doc["states"];
+    if (states.isNull() || states.size() == 0) {
+        return false;
+    }
+
+    Aircraft updated = JsonParser::Parse<Aircraft>(states[0]);
+
+    auto it = trackedAircraft.find(icao);
+    if (it != trackedAircraft.end()) {
+        it->second.Update(updated, millis());
+        Serial.printf("[REFRESH] Updated %s from OpenSky\n", icao.c_str());
+        return true;
+    }
+
+    return false;
 }
 
 void AircraftManager::Update()
@@ -210,55 +348,71 @@ void AircraftManager::Update()
     if (now - lastFetch >= fetchInterval) {
         lastFetch = now;
 
-        bool success = airlabsManager.update(lat, lon, rad);
+        const String token = authHandler.GetValidToken(
+            configServer.GetStoredString("opensky-id"),
+            configServer.GetStoredString("opensky-secret")
+        );
 
-        if (!success) {
-            Serial.println("[WARN] AirLabs API request failed");
+        std::vector<std::pair<String, String>> headers = {};
+        if (!token.isEmpty()) headers.push_back({"Authorization", "Bearer " + token});
+
+        HttpResult result = http.Get(
+            "https://opensky-network.org/api/states/all",
+            {
+                {"lamin", String(lat - rad, 6)},
+                {"lamax", String(lat + rad, 6)},
+                {"lomin", String(lon - rad, 6)},
+                {"lomax", String(lon + rad, 6)}
+            },
+            headers
+        );
+
+        if (!result.success) {
+            Serial.print("[WARN] OpenSky API request failed: ");
+            Serial.println(result.errorMessage);
             return;
         }
 
-        const auto& airlabsAircraft = airlabsManager.getAircraft();
+        JsonDocument doc;
+        DeserializationError parseError = deserializeJson(doc, result.response);
+        if (parseError) {
+            Serial.printf("[WARN] OpenSky JSON parse failed: %s\n", parseError.c_str());
+            return;
+        }
+
+        JsonArray states = doc["states"];
+        if (states.isNull()) {
+            Serial.println("[WARN] OpenSky returned no states array");
+            return;
+        }
+
+        auto aircraft = JsonParser::ParseArray<Aircraft>(states);
         now = millis();
 
-        // Guard against empty responses wiping the radar — treat as fetch failure
-        if (airlabsAircraft.empty()) {
-            Serial.println("[WARN] AirLabs returned empty response, keeping existing track data");
+        if (aircraft.empty()) {
+            Serial.println("[WARN] OpenSky returned empty response, keeping existing track data");
             return;
         }
 
-        for (auto& [hex, ac] : airlabsAircraft) {
-            // Convert AirLabsAircraft to Aircraft struct
-            Aircraft tracked;
-            tracked.icao24 = ac.hex;
-            tracked.callsign = ac.callsign;
-            tracked.baroAltitude = ac.alt;
-            tracked.velocity = ac.speed;
-            tracked.trueTrack = ac.dir;
-            tracked.verticalRate = ac.v_speed;
-            tracked.latitude = ac.lat;
-            tracked.longitude = ac.lng;
-            tracked.onGround = ac.alt < 30; // approximate
-            
-            auto it = trackedAircraft.find(ac.hex);
+        for (auto& ac : aircraft) {
+            auto it = trackedAircraft.find(ac.icao24);
             if (it == trackedAircraft.end())
-                trackedAircraft.emplace(hex, TrackedAircraft{ tracked, now });
+                trackedAircraft.emplace(ac.icao24, TrackedAircraft{ac, now});
             else
-                it->second.Update(tracked, now);
+                it->second.Update(ac, now);
         }
 
-        // Time-based expiry: only remove aircraft that haven't been seen for
-        // AIRCRAFT_EXPIRY_MS. This prevents momentary API gaps from wiping the radar.
-        constexpr unsigned long AIRCRAFT_EXPIRY_MS = 300000; // 5 minutes
+        constexpr unsigned long AIRCRAFT_EXPIRY_MS = 300000;
         for (auto it = trackedAircraft.begin(); it != trackedAircraft.end(); ) {
             if (now - it->second.lastSeen > AIRCRAFT_EXPIRY_MS) {
-                // Don't dismiss the detail panel just because the aircraft expired —
-                // the user may still be viewing it. They can dismiss manually.
                 Serial.printf("[RADAR] Expired stale track: %s\n", it->first.c_str());
                 it = trackedAircraft.erase(it);
             } else {
                 ++it;
             }
         }
+
+        Serial.printf("[RADAR] %d aircraft tracked\n", trackedAircraft.size());
     }
 
     if (IsDetailOpen() && selectedIcao != lastSingleFetchHex) {
@@ -271,26 +425,12 @@ void AircraftManager::Update()
         lastSingleFetch = nowSingle;
 
         Serial.printf("[RADAR] Refreshing selected flight: %s\n", selectedIcao.c_str());
-        bool ok = airlabsManager.updateSingle(selectedIcao);
 
-        if (ok) {
-            const auto& airlabsAircraft = airlabsManager.getAircraft();
-            auto alIt = airlabsAircraft.find(selectedIcao);
-            if (alIt != airlabsAircraft.end()) {
-                const AirLabsAircraft& ac = alIt->second;
-                auto trIt = trackedAircraft.find(selectedIcao);
-                if (trIt != trackedAircraft.end()) {
-                    Aircraft updated = trIt->second.state;
-                    updated.baroAltitude = ac.alt;
-                    updated.velocity = ac.speed;
-                    updated.trueTrack = ac.dir;
-                    updated.verticalRate = ac.v_speed;
-                    updated.latitude = ac.lat;
-                    updated.longitude = ac.lng;
-                    updated.onGround = ac.alt < 30;
-                    trIt->second.Update(updated, nowSingle);
-                }
-            }
+        FetchSingleAircraftOpenSky(selectedIcao);
+
+        const String airlabsKey = configServer.GetStoredString("airlabs-key");
+        if (!airlabsKey.isEmpty()) {
+            airlabsManager.updateSingle(selectedIcao);
         }
     }
 }
@@ -437,95 +577,27 @@ void AircraftManager::DrawFlightDetail(LGFX_Sprite& buf) const
     y += 5;
 
     buf.setTextColor(lgfx::color888(0, 220, 180));
-    const int maxWidth = pw - 8 - 40; // Available width for airport text
+    const int maxWidth = pw - 8 - 40;
     
     if (selectedDetail.loaded) {
-        if (!selectedDetail.departureAirport.isEmpty() || !selectedDetail.arrivalAirport.isEmpty()) {
-            // Departure airport
+        if (!selectedDetail.departureAirport.isEmpty()) {
             buf.drawString("From:", leftX, y);
             String depDisplay = selectedDetail.departureAirport;
             if (!selectedDetail.departureAirportFull.isEmpty()) {
                 depDisplay = selectedDetail.departureAirport + " - " + selectedDetail.departureAirportFull;
             }
-            
-            // Wrap long text
-            String remaining = depDisplay;
-            bool firstLine = true;
-            while (remaining.length() > 0) {
-                if (!firstLine) y += lh;
-                String line = "";
-                int charIndex = 0;
-                
-                while (charIndex < remaining.length()) {
-                    String testLine = line + remaining.charAt(charIndex);
-                    if (buf.textWidth(testLine) > maxWidth) {
-                        // Find last space to break at
-                        int lastSpace = line.lastIndexOf(' ');
-                        if (lastSpace > 0 && firstLine) {
-                            line = line.substring(0, lastSpace);
-                            remaining = remaining.substring(lastSpace + 1);
-                        } else {
-                            remaining = remaining.substring(charIndex);
-                        }
-                        break;
-                    }
-                    line = testLine;
-                    charIndex++;
-                }
-                
-                if (charIndex >= remaining.length()) {
-                    // Last line
-                    buf.drawString((firstLine ? "" : "    ") + line, leftX + 40, y);
-                    remaining = "";
-                } else {
-                    buf.drawString((firstLine ? "" : "    ") + line, leftX + 40, y);
-                }
-                firstLine = false;
-            }
-            y += lh;
-            
-            // Arrival airport
+
+            y = DrawWrappedText(buf, leftX + 40, y, depDisplay, maxWidth, lh);
+        }
+
+        if (!selectedDetail.arrivalAirport.isEmpty()) {
             buf.drawString("To:", leftX, y);
             String arrDisplay = selectedDetail.arrivalAirport;
             if (!selectedDetail.arrivalAirportFull.isEmpty()) {
                 arrDisplay = selectedDetail.arrivalAirport + " - " + selectedDetail.arrivalAirportFull;
             }
-            
-            // Wrap long text
-            remaining = arrDisplay;
-            firstLine = true;
-            while (remaining.length() > 0) {
-                if (!firstLine) y += lh;
-                String line = "";
-                int charIndex = 0;
-                
-                while (charIndex < remaining.length()) {
-                    String testLine = line + remaining.charAt(charIndex);
-                    if (buf.textWidth(testLine) > maxWidth) {
-                        // Find last space to break at
-                        int lastSpace = line.lastIndexOf(' ');
-                        if (lastSpace > 0 && firstLine) {
-                            line = line.substring(0, lastSpace);
-                            remaining = remaining.substring(lastSpace + 1);
-                        } else {
-                            remaining = remaining.substring(charIndex);
-                        }
-                        break;
-                    }
-                    line = testLine;
-                    charIndex++;
-                }
-                
-                if (charIndex >= remaining.length()) {
-                    // Last line
-                    buf.drawString((firstLine ? "" : "    ") + line, leftX + 40, y);
-                    remaining = "";
-                } else {
-                    buf.drawString((firstLine ? "" : "    ") + line, leftX + 40, y);
-                }
-                firstLine = false;
-            }
-            y += lh;
+
+            y = DrawWrappedText(buf, leftX + 40, y, arrDisplay, maxWidth, lh);
         }
 
         if (selectedDetail.departureTime > 0) {
@@ -553,8 +625,8 @@ void AircraftManager::DrawFlightDetail(LGFX_Sprite& buf) const
         if (selectedDetail.departureAirport.isEmpty() && selectedDetail.arrivalAirport.isEmpty()
             && selectedDetail.departureTime == 0 && selectedDetail.arrivalTime == 0) {
             buf.setTextColor(lgfx::color888(180, 180, 0));
-            buf.drawString("Flight not in OpenSky", leftX, y);
-            buf.drawString("route database", leftX, y + lh);
+            buf.drawString("No route data", leftX, y);
+            buf.drawString("available", leftX, y + lh);
             y += lh * 2;
         }
     } else if (selectedDetail.attempted) {
@@ -564,7 +636,7 @@ void AircraftManager::DrawFlightDetail(LGFX_Sprite& buf) const
         y += lh * 2;
     } else {
         buf.setTextColor(lgfx::color888(180, 180, 0));
-        buf.drawString("Needs OpenSky", leftX, y);
+        buf.drawString("Needs API", leftX, y);
         buf.drawString("credentials", leftX, y + lh);
         y += lh * 2;
     }

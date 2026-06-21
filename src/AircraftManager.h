@@ -4,7 +4,10 @@
 
 #include "models/TrackedAircraft.h"
 #include "ConfigurationWebServer.h"
+#include "OpenSkyAuthTokenHandler.h"
+#include "HttpRequestManager.h"
 #include "AirLabsManager.h"
+#include "AirportDatabase.h"
 #include "LGFX.h"
 
 class AircraftManager
@@ -46,6 +49,9 @@ private:
 
     ConfigurationWebServer& configServer;
     AirLabsManager& airlabsManager;
+    OpenSkyAuthTokenHandler& authHandler;
+    HttpRequestManager& http;
+    AirportDatabase* airportDb;
     LGFX& tft;
 
     void DrawRadarCircles(LGFX_Sprite& backbuffer) const;
@@ -54,9 +60,18 @@ private:
     void DrawAircraftTriangle(LGFX_Sprite& backbuffer, int x, int y, const TrackedAircraft& tracked) const;
     String LookupAirline(const String& callsign) const;
 
+    bool FetchFlightDetailAirlabs(const String& icao);
+    bool FetchSingleAircraftOpenSky(const String& icao);
+
 public:
-    AircraftManager(ConfigurationWebServer& config, AirLabsManager& airlabs, LGFX& tftGfx)
-        : configServer(config), airlabsManager(airlabs), tft(tftGfx)
+    AircraftManager(
+        ConfigurationWebServer& config,
+        AirLabsManager& airlabs,
+        OpenSkyAuthTokenHandler& auth,
+        HttpRequestManager& httpManager,
+        AirportDatabase* airportDb,
+        LGFX& tftGfx)
+        : configServer(config), airlabsManager(airlabs), authHandler(auth), http(httpManager), airportDb(airportDb), tft(tftGfx)
     {
     }
     ~AircraftManager() = default;
@@ -69,13 +84,11 @@ public:
     double getRadius() const { return rad; }
     void adjustRadius(double delta);
 
-    // Units conversion
     float ConvertSpeed(float mps) const { return units == IMPERIAL ? mps * 1.94384f : mps; }
     float ConvertAltitude(float m) const { return units == IMPERIAL ? m * 3.28084f : m; }
     String SpeedUnit() const { return units == IMPERIAL ? "kt" : "m/s"; }
     String AltUnit() const { return units == IMPERIAL ? "ft" : "m"; }
 
-    // Flight detail interaction
     bool IsDetailOpen() const { return !selectedIcao.isEmpty(); }
     void SelectFlight(const String& icao24);
     void DismissDetail();
