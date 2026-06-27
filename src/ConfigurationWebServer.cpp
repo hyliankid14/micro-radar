@@ -1,5 +1,7 @@
 #include "ConfigurationWebServer.h"
 #include <ESPmDNS.h>
+#include <algorithm>
+#include "ATCFeedDatabase.h"
 
 // HTML stored in flash
 // %PLACEHOLDER% tokens are substituted at serve time by the template processor
@@ -54,20 +56,6 @@ static const char CONFIG_HTML[] PROGMEM = R"CONFIGHTML(
                         class="flex-1 border border-green-500 bg-gray-900 w-full px-3 py-2 text-lg sm:text-base sm:px-1 sm:py-0">
                 </label>
 
-                <label class="flex flex-col sm:flex-row items-start sm:items-center gap-2">
-                    <span>AirLabs API Key:</span>
-                    <input
-                        name="airlabs-key"
-                        value='%AIRLABS_KEY%'
-                        placeholder="Enter AirLabs API key (free at airlabs.co)"
-                        class="flex-1 border border-green-500 bg-gray-900 w-full px-3 py-2 text-lg sm:text-base sm:px-1 sm:py-0">
-                </label>
-
-                <div class="flex gap-2 px-1 text-xs sm:text-xs opacity-70">
-                    <span>&rarr;</span>
-                    <span>Free signup: <a href="https://airlabs.co/register" target="_blank" class="text-green-300 underline">airlabs.co/register</a> (1,000 req/month)</span>
-                </div>
-
                 <div class="flex flex-col sm:flex-row gap-4 sm:justify-between">
                     <label class="flex flex-col sm:flex-row items-start sm:items-center gap-2">
                         <span>Radar sweep:</span>
@@ -96,7 +84,7 @@ static const char CONFIG_HTML[] PROGMEM = R"CONFIGHTML(
                 </div>
 
                 <label class="flex flex-col sm:flex-row items-start sm:items-center gap-2">
-                    <span>Units:</span>
+                    <span class="sm:w-24 shrink-0">Units:</span>
                     <select
                         name="units"
                         class="flex-1 border border-green-500 bg-gray-900 px-3 py-2 text-lg sm:text-base sm:px-1 sm:py-0">
@@ -104,6 +92,95 @@ static const char CONFIG_HTML[] PROGMEM = R"CONFIGHTML(
                         <option value="imperial" %UNITSIMPERIAL%>Imperial (knots, feet)</option>
                     </select>
                 </label>
+
+                <div class="px-1 font-bold text-lg sm:text-base text-green-300">Radar Tracking — OpenSky</div>
+
+                <label class="flex flex-col sm:flex-row items-start sm:items-center gap-2">
+                    <span>OpenSky Client ID:</span>
+                    <input
+                        name="opensky-id"
+                        value='%OPENSKY_ID%'
+                        placeholder="Enter OpenSky Client ID"
+                        class="flex-1 border border-green-500 bg-gray-900 w-full px-3 py-2 text-lg sm:text-base sm:px-1 sm:py-0">
+                </label>
+
+                <label class="flex flex-col sm:flex-row items-start sm:items-center gap-2">
+                    <span>OpenSky Client Secret:</span>
+                    <input
+                        name="opensky-secret"
+                        type="password"
+                        value='%OPENSKY_SECRET%'
+                        placeholder="Enter OpenSky Client Secret"
+                        class="flex-1 border border-green-500 bg-gray-900 w-full px-3 py-2 text-lg sm:text-base sm:px-1 sm:py-0">
+                </label>
+
+                <div class="flex gap-2 px-1 text-xs sm:text-xs opacity-70">
+                    <span>&rarr;</span>
+                    <span>Free signup: <a href="https://opensky-network.org" target="_blank" class="text-green-300 underline">opensky-network.org</a> (4,000 req/day authenticated)</span>
+                </div>
+
+                <hr class="border-green-500 opacity-40 my-2">
+
+                <div class="px-1 font-bold text-lg sm:text-base text-green-300">Flight Details — Airlabs</div>
+
+                <label class="flex flex-col sm:flex-row items-start sm:items-center gap-2">
+                    <span>Airlabs API Key:</span>
+                    <input
+                        name="airlabs-key"
+                        value='%AIRLABS_KEY%'
+                        placeholder="Enter Airlabs API key"
+                        class="flex-1 border border-green-500 bg-gray-900 w-full px-3 py-2 text-lg sm:text-base sm:px-1 sm:py-0">
+                </label>
+
+                <div class="flex gap-2 px-1 text-xs sm:text-xs opacity-70">
+                    <span>&rarr;</span>
+                    <span>Free signup: <a href="https://airlabs.co/register" target="_blank" class="text-green-300 underline">airlabs.co/register</a> (1,000 req/month for flight details)</span>
+                </div>
+
+                <hr class="border-green-500 opacity-40 my-2">
+
+                <div class="px-1 font-bold text-lg sm:text-base text-green-300">ATC Audio</div>
+
+                <div class="flex gap-4 sm:gap-8 flex-col sm:flex-row">
+                    <label class="flex flex-col sm:flex-row items-start sm:items-center gap-2">
+                        <span>Enabled:</span>
+                        <input
+                            name="atc-enabled"
+                            type="checkbox"
+                            %ATC_ENABLED%
+                            class="px-3 sm:px-1 accent-green-500">
+                    </label>
+                </div>
+
+                <label class="flex flex-col sm:flex-row items-start sm:items-center gap-2">
+                    <span class="sm:w-24 shrink-0">Feed:</span>
+                    <select
+                        name="atc-feed"
+                        id="atc-feed-select"
+                        class="flex-1 border border-green-500 bg-gray-900 px-3 py-2 text-lg sm:text-base sm:px-1 sm:py-0">
+                        %ATC_FEED_OPTIONS%
+                    </select>
+                </label>
+
+                <label class="flex flex-col sm:flex-row items-start sm:items-center gap-2">
+                    <span class="sm:w-24 shrink-0">Volume:</span>
+                    <input
+                        name="atc-volume"
+                        type="range"
+                        min="0"
+                        max="100"
+                        value="%ATC_VOLUME%"
+                        step="5"
+                        class="flex-1 accent-green-500 px-3 py-2">
+                    <span id="vol-display">%ATC_VOLUME%%</span>
+                </label>
+
+                <div class="flex gap-2 px-1 text-xs sm:text-xs opacity-70">
+                    <span>&rarr;</span>
+                    <span>Live ATC audio from <a href="https://www.liveatc.net" target="_blank" class="text-green-300 underline">LiveATC.net</a> for personal use</span>
+                </div>
+
+                <hr class="border-green-500 opacity-40 my-2">
 
                 <div class="flex flex-col sm:flex-row gap-4 sm:gap-5">
                     <input
@@ -117,6 +194,11 @@ static const char CONFIG_HTML[] PROGMEM = R"CONFIGHTML(
         </fieldset>
 
         <script>
+            var volSlider = document.querySelector('input[name="atc-volume"]');
+            var volDisplay = document.getElementById('vol-display');
+            if (volSlider && volDisplay) {
+                volSlider.addEventListener('input', function() { volDisplay.textContent = this.value + '%'; });
+            }
             document.getElementById('cfg').addEventListener('submit', function(e) {
                 e.preventDefault();
                 fetch(this.action, { method: 'POST', body: new FormData(this) })
@@ -138,33 +220,64 @@ void ConfigurationWebServer::Initialise() {
     server.on("/", HTTP_GET, [&](AsyncWebServerRequest* request) {
         Serial.println("[GET] Handling request to config web server...");
 
-        // read all values up front so the processor lambda can capture by value
         prefs.begin("config", true);
         const String latitude = prefs.getString("latitude", "");
         const String longitude = prefs.getString("longitude", "");
         const String radius = prefs.getString("radius", "1.0");
+        const String openskyId = prefs.getString("opensky-id", "");
+        String openskySecret = prefs.getString("opensky-secret", "");
         const String airlabsKey = prefs.getString("airlabs-key", "");
         const String scanlineEnabled = prefs.getString("scanline", "true");
         const String infoTextEnabled = prefs.getString("infotext", "true");
         const String triangleEnabled = prefs.getString("triangle", "true");
         const String unitsValue = prefs.getString("units", "metric");
+        const String atcFeedIndex = prefs.getString("atc-feed", "");
+        const String atcEnabled = prefs.getString("atc-enabled", "false");
+        const String atcVolume = prefs.getString("atc-volume", "40");
         prefs.end();
 
-        // template processor called once per %PLACEHOLDER% token found in CONFIG_HTML.
+        std::fill(openskySecret.begin(), openskySecret.end(), '*');
+
+        String feedOptions;
+        feedOptions += "<option value=\"\">-- Select ATC Feed --</option>";
+        for (size_t i = 0; i < ATC_FEED_COUNT; i++) {
+            String optValue = String(i);
+            String labelText = getATCFeedLabel(i);
+            String descText = getATCFeedDescription(i);
+            bool isSelected = (optValue == atcFeedIndex);
+
+            feedOptions += "<option value=\"";
+            feedOptions += optValue;
+            feedOptions += "\" title=\"";
+            feedOptions += descText;
+            feedOptions += "\"";
+            if (isSelected) {
+                feedOptions += " selected";
+            }
+            feedOptions += ">";
+            feedOptions += labelText;
+            feedOptions += "</option>";
+        }
+
         AsyncWebServerResponse* response = request->beginResponse(
             200, "text/html",
             (const uint8_t*)CONFIG_HTML, sizeof(CONFIG_HTML) - 1,
-            [latitude, longitude, radius, airlabsKey, scanlineEnabled, infoTextEnabled, triangleEnabled, unitsValue]
+            [latitude, longitude, radius, openskyId, openskySecret, airlabsKey, scanlineEnabled, infoTextEnabled, triangleEnabled, unitsValue, atcFeedIndex, atcEnabled, atcVolume, feedOptions]
             (const String& var) -> String {
-                if (var == "LATITUDE")       return latitude;
-                if (var == "LONGITUDE")      return longitude;
-                if (var == "RADIUS")         return radius;
-                if (var == "AIRLABS_KEY")    return airlabsKey;
-                if (var == "SCANLINE")       return scanlineEnabled == "true" ? "checked" : "";
-                if (var == "INFOTEXT")       return infoTextEnabled == "true" ? "checked" : "";
-                if (var == "TRIANGLE")       return triangleEnabled == "true" ? "checked" : "";
-                if (var == "UNITSMETRIC")    return unitsValue != "imperial" ? "selected" : "";
-                if (var == "UNITSIMPERIAL")  return unitsValue == "imperial" ? "selected" : "";
+                if (var == "LATITUDE")        return latitude;
+                if (var == "LONGITUDE")       return longitude;
+                if (var == "RADIUS")          return radius;
+                if (var == "OPENSKY_ID")      return openskyId;
+                if (var == "OPENSKY_SECRET")  return openskySecret;
+                if (var == "AIRLABS_KEY")     return airlabsKey;
+                if (var == "SCANLINE")        return scanlineEnabled == "true" ? "checked" : "";
+                if (var == "INFOTEXT")        return infoTextEnabled == "true" ? "checked" : "";
+                if (var == "TRIANGLE")        return triangleEnabled == "true" ? "checked" : "";
+                if (var == "UNITSMETRIC")     return unitsValue != "imperial" ? "selected" : "";
+                if (var == "UNITSIMPERIAL")   return unitsValue == "imperial" ? "selected" : "";
+                if (var == "ATC_ENABLED")     return atcEnabled == "true" ? "checked" : "";
+                if (var == "ATC_FEED_OPTIONS") return feedOptions;
+                if (var == "ATC_VOLUME")      return atcVolume;
                 return "";
             }
         );
@@ -176,7 +289,6 @@ void ConfigurationWebServer::Initialise() {
     server.on("/save", HTTP_POST, [&](AsyncWebServerRequest* request) {
         Serial.println("[POST] Handling form submission to config web server...");
 
-        // safe parameter retrieval helper lambda
         auto TrySaveParam = [request, this](const char* paramName) {
             const auto* param = request->getParam(paramName, true);
             if (param == nullptr)
@@ -191,12 +303,27 @@ void ConfigurationWebServer::Initialise() {
         TrySaveParam("latitude");
         TrySaveParam("longitude");
         TrySaveParam("radius");
+        TrySaveParam("opensky-id");
+
+        const auto* secretParam = request->getParam("opensky-secret", true);
+        if (secretParam != nullptr) {
+            const String& secret = secretParam->value();
+            if (secret.indexOf('*') == -1) {
+                prefs.putString("opensky-secret", secret);
+            }
+        }
+
         TrySaveParam("airlabs-key");
 
         prefs.putString("scanline", request->hasParam("scanline", true) ? "true" : "false");
         prefs.putString("triangle", request->hasParam("triangle", true) ? "true" : "false");
         prefs.putString("infotext", request->hasParam("infotext", true) ? "true" : "false");
         TrySaveParam("units");
+
+        prefs.putString("atc-enabled", request->hasParam("atc-enabled", true) ? "true" : "false");
+        TrySaveParam("atc-feed");
+        TrySaveParam("atc-volume");
+
         prefs.end();
 
         request->send(200, "text/html", "Saved - restarting device...");

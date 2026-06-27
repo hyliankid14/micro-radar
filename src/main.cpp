@@ -3,20 +3,29 @@
 #include <WiFiManager.h>
 #include <esp_sleep.h>
 #include <driver/rtc_io.h>
+#include <Wire.h>
 
 #include "LGFX.h"
 #include "WiFiManagerHelpers.h"
 #include "ConfigurationWebServer.h"
 #include "AirportDatabase.h"
 #include "AirLabsManager.h"
+#include "HttpRequestManager.h"
+#include "OpenSkyAuthTokenHandler.h"
 #include "AircraftManager.h"
 #include "DrawHelpers.h"
 #include "TouchManager.h"
+#include "ES8311Config.h"
+#include "ATCAudioManager.h"
+#include "ATCFeedDatabase.h"
 
 constexpr int SCREEN_SIZE = 240;
 constexpr int SCREEN_SIZE_DIV_2 = (SCREEN_SIZE / 2);
 constexpr int BACKLIGHT_PIN = 46;
 constexpr int PWR_LATCH_PIN = 2;
+constexpr int PA_ENABLE_PIN = 7;
+constexpr int I2C_SDA_PIN = 42;
+constexpr int I2C_SCL_PIN = 41;
 
 constexpr int BTN_BOOT = 0;
 constexpr int BTN_PLUS = 4;
@@ -62,9 +71,14 @@ LGFX_Sprite backbuffer(&tft);
 WiFiManager wm;
 ConfigurationWebServer configServer;
 AirportDatabase airportDb;
-AirLabsManager airlabsManager(configServer, &airportDb);
+AirLabsManager airlabsManager(configServer);
+HttpRequestManager httpManager;
+OpenSkyAuthTokenHandler authHandler(httpManager);
 
-AircraftManager aircraftManager(configServer, airlabsManager, tft);
+AircraftManager aircraftManager(configServer, airlabsManager, authHandler, httpManager, &airportDb, tft);
+
+ES8311Config es8311Codec;
+ATCAudioManager atcAudio(es8311Codec, PA_ENABLE_PIN);
 
 bool debounceButton(ButtonState& b)
 {
@@ -87,6 +101,8 @@ void enterDeepSleep()
 {
   Serial.println("[PWR] Entering deep sleep...");
   Serial.flush();
+
+  atcAudio.stop();
 
   digitalWrite(BACKLIGHT_PIN, LOW);
   tft.sleep();
@@ -342,14 +358,54 @@ void setup()
     Serial.println("[BOOT] Airport database not available");
   }
   
-  // Link database to AirLabs manager
-  airlabsManager.setAirportDatabase(&airportDb);
-  
   Serial.println("[BOOT] Config web server ready - http://microradar.local");
   aircraftManager.Initialise();
   zoomRadius = aircraftManager.getRadius();
   Serial.print("[BOOT] Aircraft manager ready, initial radius: ");
   Serial.println(zoomRadius, 2);
+
+  Wire.begin(I2C_SDA_PIN, I2C_SCL_PIN);
+  Serial.println("[BOOT] I2C bus initialised");
+
+  if (es8311Codec.init()) {
+    Serial.println("[BOOT] ES8311 codec initialised");
+  } else {
+    Serial.println("[BOOT] ES8311 codec not detected - audio disabled");
+  }
+
+  atcAudio.init();
+
+  if (es8311Codec.isReady()) {
+    Serial.println("[BOOT] Testing audio path with test stream...");
+    if (atcAudio.playTestStream()) {
+      Serial.println("[BOOT] Test stream started - you should hear audio within 5 seconds");
+      delay(10000);
+      atcAudio.stop();
+      Serial.println("[BOOT] Test stream stopped");
+    } else {
+      Serial.println("[BOOT] Test stream FAILED - I2S/ES8311 path may be broken");
+    }
+  }
+
+  String atcEnabled = configServer.GetStoredString("atc-enabled");
+  String atcFeedStr = configServer.GetStoredString("atc-feed");
+  String atcVolumeStr = configServer.GetStoredString("atc-volume");
+
+  if (!atcVolumeStr.isEmpty()) {
+    atcAudio.setVolume(atcVolumeStr.toInt());
+  }
+
+  if (atcEnabled == "true" && !atcFeedStr.isEmpty()) {
+    size_t feedIndex = atcFeedStr.toInt();
+    if (feedIndex < ATC_FEED_COUNT) {
+      atcAudio.setFeedName(getATCFeedLabel(feedIndex));
+      if (atcAudio.playStreamByIndex(feedIndex)) {
+        Serial.println("[BOOT] ATC audio playback started");
+      } else {
+        Serial.println("[BOOT] ATC audio playback failed to start");
+      }
+    }
+  }
 
   backbuffer.fillScreen(lgfx::color888(0, 0, 0));
   backbuffer.setTextColor(lgfx::color888(0, 255, 0));
@@ -372,6 +428,8 @@ void loop()
   handleZoomButtons();
   checkLongPress();
   checkResetHold();
+
+  atcAudio.update();
 
   if (deviceState != STATE_ON) {
     delay(20);
