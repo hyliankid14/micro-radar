@@ -236,14 +236,13 @@ bool AircraftManager::FetchFlightDetailAirlabs(const String& icao)
 
     const auto& airlabsAircraft = airlabsManager.getAircraft();
     
-    // Normalize icao to lowercase for consistent map lookup
     String lookupIcao = icao;
     lookupIcao.toLowerCase();
     
     auto it = airlabsAircraft.find(lookupIcao);
     if (it == airlabsAircraft.end()) {
-        Serial.println("[DETAIL] Airlabs returned no data for icao");
-        return false;
+        Serial.println("[DETAIL] Airlabs has no route data for this aircraft");
+        return true;
     }
 
     const AirLabsAircraft& ac = it->second;
@@ -285,14 +284,17 @@ void AircraftManager::SelectFlight(const String& icao24)
     
     Serial.printf("[FLIGHT] Selected %s\n", icao24.c_str());
 
-    // Fetch all flight detail (route, airports, times) exclusively from Airlabs
-    // OpenSky is only used for live position data (the radar), not flight detail
-    if (!FetchFlightDetailAirlabs(icao24)) {
-        Serial.println("[FLIGHT] Airlabs detail fetch failed — no route data available");
+    const String airlabsKey = configServer.GetStoredString("airlabs-key");
+    if (airlabsKey.isEmpty()) {
+        Serial.println("[FLIGHT] No Airlabs key configured");
+    } else {
+        if (FetchFlightDetailAirlabs(icao24)) {
+            selectedDetail.loaded = true;
+        }
+        selectedDetail.attempted = true;
     }
     
-    selectedDetail.loaded = true;
-    Serial.println("[FLIGHT] Detail loaded");
+    Serial.println("[FLIGHT] Detail processing complete");
 }
 
 bool AircraftManager::FetchSingleAircraftOpenSky(const String& icao)

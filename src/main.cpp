@@ -71,8 +71,8 @@ LGFX_Sprite backbuffer(&tft);
 WiFiManager wm;
 ConfigurationWebServer configServer;
 AirportDatabase airportDb;
-AirLabsManager airlabsManager(configServer);
 HttpRequestManager httpManager;
+AirLabsManager airlabsManager(configServer, httpManager);
 OpenSkyAuthTokenHandler authHandler(httpManager);
 
 AircraftManager aircraftManager(configServer, airlabsManager, authHandler, httpManager, &airportDb, tft);

@@ -1,9 +1,9 @@
 #pragma once
 
 #include <Arduino.h>
-#include <HTTPClient.h>
 #include <map>
 #include "ConfigurationWebServer.h"
+#include "HttpRequestManager.h"
 
 struct AirLabsAircraft {
     String hex;
@@ -37,9 +37,10 @@ private:
     String apiKey;
     std::map<String, AirLabsAircraft> aircraft;
     ConfigurationWebServer& configServer;
+    HttpRequestManager& http;
     
 public:
-    AirLabsManager(ConfigurationWebServer& config);
+    AirLabsManager(ConfigurationWebServer& config, HttpRequestManager& httpManager);
     
     bool updateSingle(const String& hex);
     const std::map<String, AirLabsAircraft>& getAircraft() const { return aircraft; }
