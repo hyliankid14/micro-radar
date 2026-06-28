@@ -230,8 +230,7 @@ bool AircraftManager::FetchFlightDetailAirlabs(const String& icao)
     }
 
     if (!airlabsManager.updateSingle(icao)) {
-        Serial.println("[DETAIL] Airlabs fetch failed");
-        return false;
+        Serial.println("[DETAIL] Airlabs hex lookup failed, trying callsign...");
     }
 
     const auto& airlabsAircraft = airlabsManager.getAircraft();
@@ -240,40 +239,68 @@ bool AircraftManager::FetchFlightDetailAirlabs(const String& icao)
     lookupIcao.toLowerCase();
     
     auto it = airlabsAircraft.find(lookupIcao);
-    if (it == airlabsAircraft.end()) {
-        Serial.println("[DETAIL] Airlabs has no route data for this aircraft");
+    if (it != airlabsAircraft.end()) {
+        const AirLabsAircraft& ac = it->second;
+
+        selectedDetail.departureAirport = ac.dep_iata;
+        selectedDetail.arrivalAirport = ac.arr_iata;
+
+        if (airportDb) {
+            if (!ac.dep_iata.isEmpty()) {
+                String name = airportDb->getAirportName(ac.dep_iata);
+                if (!name.isEmpty()) selectedDetail.departureAirportFull = name;
+            }
+            if (!ac.arr_iata.isEmpty()) {
+                String name = airportDb->getAirportName(ac.arr_iata);
+                if (!name.isEmpty()) selectedDetail.arrivalAirportFull = name;
+            }
+        }
+
+        selectedDetail.departureTime = ac.dep_time;
+        selectedDetail.arrivalTime = ac.arr_time;
+
+        Serial.printf("[DETAIL] Airlabs loaded for %s: %s -> %s\n",
+            icao.c_str(), selectedDetail.departureAirport.c_str(), selectedDetail.arrivalAirport.c_str());
         return true;
     }
 
-    const AirLabsAircraft& ac = it->second;
+    auto trackedIt = trackedAircraft.find(icao);
+    if (trackedIt == trackedAircraft.end()) {
+        Serial.println("[DETAIL] No tracked aircraft found");
+        return false;
+    }
 
-    // Get 3-letter IATA airport codes from Airlabs
-    selectedDetail.departureAirport = ac.dep_iata;
-    selectedDetail.arrivalAirport = ac.arr_iata;
+    const String& callsign = trackedIt->second.state.callsign;
+    if (callsign.isEmpty()) {
+        Serial.println("[DETAIL] Tracked aircraft has no callsign");
+        return false;
+    }
 
-    // Resolve IATA codes to full airport names from on-device database
+    AirLabsAircraft flightData;
+    if (!airlabsManager.lookupByCallsign(callsign, flightData)) {
+        Serial.printf("[DETAIL] Callsign lookup failed for %s\n", callsign.c_str());
+        return true;
+    }
+
+    selectedDetail.departureAirport = flightData.dep_iata;
+    selectedDetail.arrivalAirport = flightData.arr_iata;
+
     if (airportDb) {
-        if (!ac.dep_iata.isEmpty()) {
-            String name = airportDb->getAirportName(ac.dep_iata);
-            if (!name.isEmpty()) {
-                selectedDetail.departureAirportFull = name;
-            }
+        if (!flightData.dep_iata.isEmpty()) {
+            String name = airportDb->getAirportName(flightData.dep_iata);
+            if (!name.isEmpty()) selectedDetail.departureAirportFull = name;
         }
-        if (!ac.arr_iata.isEmpty()) {
-            String name = airportDb->getAirportName(ac.arr_iata);
-            if (!name.isEmpty()) {
-                selectedDetail.arrivalAirportFull = name;
-            }
+        if (!flightData.arr_iata.isEmpty()) {
+            String name = airportDb->getAirportName(flightData.arr_iata);
+            if (!name.isEmpty()) selectedDetail.arrivalAirportFull = name;
         }
     }
 
-    // Departure / arrival times from Airlabs (unix timestamps)
-    selectedDetail.departureTime = ac.dep_time;
-    selectedDetail.arrivalTime = ac.arr_time;
+    selectedDetail.departureTime = flightData.dep_time;
+    selectedDetail.arrivalTime = flightData.arr_time;
 
-    Serial.printf("[DETAIL] Airlabs loaded for %s: %s -> %s, times=%ld/%ld\n",
-        icao.c_str(), selectedDetail.departureAirport.c_str(), selectedDetail.arrivalAirport.c_str(),
-        selectedDetail.departureTime, selectedDetail.arrivalTime);
+    Serial.printf("[DETAIL] Flight data loaded for %s: %s -> %s\n",
+        icao.c_str(), selectedDetail.departureAirport.c_str(), selectedDetail.arrivalAirport.c_str());
     return true;
 }
 

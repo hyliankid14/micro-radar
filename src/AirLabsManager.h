@@ -43,6 +43,7 @@ public:
     AirLabsManager(ConfigurationWebServer& config, HttpRequestManager& httpManager);
     
     bool updateSingle(const String& hex);
+    bool lookupByCallsign(const String& callsign, AirLabsAircraft& out);
     const std::map<String, AirLabsAircraft>& getAircraft() const { return aircraft; }
     
     void setApiKey(String key);

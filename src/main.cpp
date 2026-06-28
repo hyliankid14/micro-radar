@@ -427,9 +427,9 @@ void loop()
     DrawScanLines(backbuffer,
       SCREEN_SIZE_DIV_2 - 1,
       SCREEN_SIZE_DIV_2 - 1,
-      SCREEN_SIZE_DIV_2 - 1 + (std::cos(millis() / 3000.0f) * SCREEN_SIZE_DIV_2),
-      SCREEN_SIZE_DIV_2 - 1 + (std::sin(millis() / 3000.0f) * SCREEN_SIZE_DIV_2),
-      20, 128, 5);
+      SCREEN_SIZE_DIV_2 - 1 + (std::cos(millis() / 3000.0f) * (SCREEN_SIZE_DIV_2 - 1)),
+      SCREEN_SIZE_DIV_2 - 1 + (std::sin(millis() / 3000.0f) * (SCREEN_SIZE_DIV_2 - 1)),
+      20, 128, 5, SCREEN_SIZE_DIV_2 - 1);
   }
   aircraftManager.Draw(backbuffer);
   if (aircraftManager.IsDetailOpen()) {
