@@ -4,20 +4,23 @@
 #include <Preferences.h>
 
 class AirportDatabase;
+class AircraftManager;
 
 class ConfigurationWebServer {
 private:
     AsyncWebServer server;
     Preferences prefs;
-    AirportDatabase* airportDb;
+    AirportDatabase* airportDb = nullptr;
+    AircraftManager* aircraftMgr = nullptr;
 
 public:
-    ConfigurationWebServer() : server(80), prefs(), airportDb(nullptr) {}
-    ConfigurationWebServer(int port) : server(port), prefs(), airportDb(nullptr) {}
+    ConfigurationWebServer() : server(80), prefs() {}
+    ConfigurationWebServer(int port) : server(port), prefs() {}
 
     void Initialise();
     [[nodiscard]] const String GetStoredString(const char* key);
     void SetStoredString(const char* key, String value);
-    
-    void SetAirportDatabase(AirportDatabase* db);
+
+    void SetAirportDatabase(AirportDatabase* db) { airportDb = db; }
+    void SetAircraftManager(AircraftManager* mgr) { aircraftMgr = mgr; }
 };

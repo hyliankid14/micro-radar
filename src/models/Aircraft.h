@@ -27,6 +27,13 @@ struct Aircraft {
     bool   spi;             // [15] special purpose indicator flag
     int    positionSource;  // [16] 0=ADS-B, 1=ASTERIX, 2=MLAT, 3=FLARM
     int    category;        // [17] aircraft category (0=unknown, see docs for full list)
+
+    // Extended ADS-B metadata (from adsb.lol / AirLabs)
+    String registration;    // Aircraft tail registration (e.g. "G-XWBA")
+    String typeCode;        // ICAO aircraft type designator (e.g. "A35K", "B738")
+    String typeDescription; // Aircraft model description if provided
+    String operatorName;    // Owner/operator name if provided
+    String emitterCategory; // ADS-B emitter category (e.g. "A3", "A5", "A7")
 };
 
 namespace JsonParser {

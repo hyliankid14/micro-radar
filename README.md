@@ -36,18 +36,27 @@ The original project uses an ESP32-C3 module with a round 1.28" GC9A01 display. 
 - **Metric and imperial units** — configurable speed (m/s, knots) and altitude (m, feet)
 - **Zoom HUD** — on-screen radius indicator when adjusting zoom
 
-## Elecrow CrowPanel 7-inch
+## Elecrow CrowPanel 7-inch (AvioFrame Edition)
 
-The `crowpanel-7` PlatformIO environment supports the Elecrow CrowPanel Basic
-7-inch ESP32-S3 (800x480, 4 MB flash, 8 MB PSRAM). It retains the radar on the
-left and shows selected flight details on the right. Tap an aircraft to select
-it, tap the detail panel to close it, and use the bottom zoom buttons to adjust
-the radius. When idle, the detail panel cycles through visible aircraft every
-10 seconds; touch pauses cycling for 15 seconds. Automatic cycling uses radar
-data and previously looked-up details without making extra flight-detail API
-requests. Hold the bottom-right reset area for three seconds to clear Wi-Fi
-credentials. Waveshare-specific battery, power-latch and physical button
-features are not available on the CrowPanel.
+The `crowpanel-7` PlatformIO environment supports the Elecrow CrowPanel Basic 7-inch ESP32-S3 (800×480, 4 MB flash, 8 MB PSRAM) with a full suite of living-room aviation display features inspired by [AvioFrame](https://avioframe.com/):
+
+- **3 Switchable Display Views**:
+  - **Radar + Spotter Card (`RADAR + CARD`)**: Split view with circular radar scope, range rings, compass markers, breadcrumb flight trails, and a detailed Spotter Card on the right.
+  - **Split-Flap Airport Departure Board (`DEPARTURE BOARD`)**: Full-screen retro mechanical split-flap / LED terminal board displaying up to 7 live flights sorted by distance (tap any row to open its full poster).
+  - **AvioFrame Portrait Poster (`SPOTTER POSTER`)**: Full-screen gallery poster featuring large aircraft photography/schematics, carrier branding, origin/destination route progress bar, 6 avionics telemetry cards, and a mini compass locator radar.
+- **5 Color Themes**: **Midnight Cockpit** (EFIS cyan/magenta), **AvioFrame Gallery Light** (warm paper & vermilion ink), **Split-Flap Solari Amber**, **Technical Blueprint**, and **Classic Radar Green**.
+- **Real Aircraft Photos & Carrier Logos (PSRAM Cache + Vector Fallbacks)**:
+  - Automatically downloads real aircraft thumbnail photos via the free **Planespotters.net API** and carrier logos by IATA code into the 8 MB PSRAM, decoded into 16-bit RGB565 bitmaps.
+  - Instant procedural **vector aircraft silhouettes** (8 airframe categories: 4-engine superjumbo, twin-aisle widebody, narrowbody jet, regional turboprop, business jet, light GA prop, helicopter, military jet) and **stylized airline livery tail-fin badges** (140+ airlines mapped by 3-letter ICAO & 2-letter IATA codes) when loading or offline.
+- **"Track a Flight" / Partner Flight Pinning**:
+  - Pin any flight worldwide by Flight Number / Callsign (e.g. `BA117`, `BAW117`, `U28412`), Tail Registration (`G-XWBA`), or ICAO Hex from your phone — tracks the pinned flight live via `adsb.lol` even when thousands of miles outside your local radar radius.
+- **Easy Phone Setup & Live Remote Control (`http://microradar.local`)**:
+  - On-screen **scannable QR codes** for both first-time Wi-Fi hotspot connection and opening the phone remote control.
+  - Mobile web app with **Live Remote Control** (switch views, themes, zoom, pin flights, or tap a flight from the live list to display it on screen with zero reboot) and **1-Tap Location Setup** (phone GPS or 24 major airport/city presets).
+- **Gift Personalization, Night Schedule & Spotter Log**:
+  - Customizable frame title & gift greeting message on the boot and welcome screens.
+  - Configurable night quiet-hours schedule that automatically sleeps the backlight overnight and wakes on touch.
+  - Session **Sky Spotter Log & Records** modal tracking Total Spotted, Closest Flyover, Highest Altitude, Fastest Ground Speed, and **Rare Catches** (A380/B747 Superjumbos, Helicopters, Military, Emergency Squawks).
 
 Build and upload explicitly, choosing the correct serial port:
 

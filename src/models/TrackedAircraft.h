@@ -6,6 +6,14 @@ struct TrackedAircraft {
     Aircraft state;
     unsigned long lastSeen;
 
+    struct TrailPoint {
+        float lat = 0.0f;
+        float lon = 0.0f;
+    };
+    static constexpr int MAX_TRAIL_POINTS = 10;
+    TrailPoint trail[MAX_TRAIL_POINTS];
+    int trailCount = 0;
+
     // blending state
     float blendFromLat = 0.0f;
     float blendFromLon = 0.0f;
@@ -19,6 +27,8 @@ struct TrackedAircraft {
         blendFromLat(ac.latitude),
         blendFromLon(ac.longitude),
         blendAlpha(1.0f) {
+        trail[0] = { ac.latitude, ac.longitude };
+        trailCount = 1;
     }
 
     // subsequent update — blend from current visual position
@@ -29,7 +39,40 @@ struct TrackedAircraft {
         blendFromLon = curLon;
         blendAlpha = 0.0f;  // restart blend
 
+        // Preserve richer fields if the update came from a basic source
+        String prevReg = state.registration;
+        String prevType = state.typeCode;
+        String prevDesc = state.typeDescription;
+        String prevOp = state.operatorName;
+        String prevCat = state.emitterCategory;
+
         state = newState;
+        if (state.registration.isEmpty()) state.registration = prevReg;
+        if (state.typeCode.isEmpty()) state.typeCode = prevType;
+        if (state.typeDescription.isEmpty()) state.typeDescription = prevDesc;
+        if (state.operatorName.isEmpty()) state.operatorName = prevOp;
+        if (state.emitterCategory.isEmpty()) state.emitterCategory = prevCat;
+
+        // Append breadcrumb if moved enough
+        if (trailCount == 0) {
+            trail[0] = { newState.latitude, newState.longitude };
+            trailCount = 1;
+        } else {
+            const TrailPoint& lastPt = trail[trailCount - 1];
+            float dLat = newState.latitude - lastPt.lat;
+            float dLon = newState.longitude - lastPt.lon;
+            if ((dLat * dLat + dLon * dLon) > 0.000004f) { // ~200m
+                if (trailCount < MAX_TRAIL_POINTS) {
+                    trail[trailCount++] = { newState.latitude, newState.longitude };
+                } else {
+                    for (int i = 1; i < MAX_TRAIL_POINTS; ++i) {
+                        trail[i - 1] = trail[i];
+                    }
+                    trail[MAX_TRAIL_POINTS - 1] = { newState.latitude, newState.longitude };
+                }
+            }
+        }
+
         lastSeen = now;
     }
 
