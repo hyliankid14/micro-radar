@@ -14,12 +14,14 @@ namespace WiFiManagerHelpers
         wm.setAPCallback([&tft](WiFiManager* wifiManager) {
             tft.fillScreen(lgfx::color888(0, 0, 0));
             tft.setTextColor(lgfx::color888(0, 255, 0));
+#ifdef CROWPANEL_7
+            tft.setTextSize(2);
+#endif
 
             const int lineHeight = tft.fontHeight() + 10;
-            const int screenSize = 240;
-            tft.drawCenterString("- SETUP -", screenSize / 2, screenSize / 2 - lineHeight);
-            tft.drawCentreString("Connect to this WiFi hotspot:", screenSize / 2, screenSize / 2);
-            tft.drawCenterString(WiFiManagerName, screenSize / 2, screenSize / 2 + lineHeight);
+            tft.drawCenterString("- SETUP -", tft.width() / 2, tft.height() / 2 - lineHeight);
+            tft.drawCentreString("Connect to this WiFi hotspot:", tft.width() / 2, tft.height() / 2);
+            tft.drawCenterString(WiFiManagerName, tft.width() / 2, tft.height() / 2 + lineHeight);
             }
         );
     }

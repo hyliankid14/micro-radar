@@ -2,7 +2,9 @@
 #include <ArduinoJson.h>
 
 AirLabsManager::AirLabsManager(ConfigurationWebServer& config, HttpRequestManager& httpManager) 
-    : configServer(config), http(httpManager) {
+    : configServer(config), http(httpManager) {}
+
+void AirLabsManager::Initialise() {
     apiKey = configServer.GetStoredString("airlabs-key");
 }
 

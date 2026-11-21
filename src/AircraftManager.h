@@ -63,6 +63,14 @@ private:
     bool FetchFlightDetailAirlabs(const String& icao);
     bool FetchSingleAircraftOpenSky(const String& icao);
 
+#ifdef CROWPANEL_7
+    bool automaticSelection = false;
+    bool interactionPaused = false;
+    unsigned long lastInteractionMs = 0;
+    unsigned long lastRotationMs = 0;
+    bool IsAircraftVisible(const TrackedAircraft& tracked) const;
+#endif
+
 public:
     AircraftManager(
         ConfigurationWebServer& config,
@@ -93,4 +101,8 @@ public:
     void SelectFlight(const String& icao24);
     void DismissDetail();
     String HitTestAircraft(int x, int y) const;
+#ifdef CROWPANEL_7
+    void NoteInteraction(unsigned long now);
+    void UpdateIdleSelection(unsigned long now);
+#endif
 };

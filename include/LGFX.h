@@ -2,6 +2,63 @@
 
 #include <LovyanGFX.hpp>
 
+#ifdef CROWPANEL_7
+#include <lgfx/v1/platforms/esp32s3/Panel_RGB.hpp>
+#include <lgfx/v1/platforms/esp32s3/Bus_RGB.hpp>
+#ifdef CROWPANEL_BUFFERED
+#include "CrowPanelRGB.h"
+#else
+#include <hal/lcd_ll.h>
+#endif
+
+class LGFX : public lgfx::LGFX_Device
+{
+#ifdef CROWPANEL_BUFFERED
+    CrowPanelRGBPanel panel;
+    CrowPanelRGBBus bus;
+#else
+    lgfx::Panel_RGB panel;
+    lgfx::Bus_RGB bus;
+#endif
+
+public:
+    LGFX()
+    {
+        auto cfg = bus.config();
+        cfg.panel = &panel;
+        cfg.pin_d0 = 15; cfg.pin_d1 = 7; cfg.pin_d2 = 6; cfg.pin_d3 = 5; cfg.pin_d4 = 4;
+        cfg.pin_d5 = 9; cfg.pin_d6 = 46; cfg.pin_d7 = 3; cfg.pin_d8 = 8; cfg.pin_d9 = 16; cfg.pin_d10 = 1;
+        cfg.pin_d11 = 14; cfg.pin_d12 = 21; cfg.pin_d13 = 47; cfg.pin_d14 = 48; cfg.pin_d15 = 45;
+        cfg.pin_henable = 41; cfg.pin_vsync = 40; cfg.pin_hsync = 39; cfg.pin_pclk = 0;
+        cfg.freq_write = 20000000;
+        cfg.hsync_polarity = 0; cfg.hsync_front_porch = 40;
+        cfg.hsync_pulse_width = 48; cfg.hsync_back_porch = 40;
+        cfg.vsync_polarity = 0; cfg.vsync_front_porch = 1;
+        cfg.vsync_pulse_width = 31; cfg.vsync_back_porch = 13;
+        cfg.pclk_active_neg = 1;
+        cfg.de_idle_high = 0;
+        cfg.pclk_idle_high = 0;
+        bus.config(cfg);
+        auto panelCfg = panel.config();
+        panelCfg.memory_width = panelCfg.panel_width = 800;
+        panelCfg.memory_height = panelCfg.panel_height = 480;
+        panel.config(panelCfg);
+        panel.setBus(&bus);
+        setPanel(&panel);
+    }
+
+#ifndef CROWPANEL_BUFFERED
+    bool init()
+    {
+        if (!lgfx::LGFX_Device::init()) return false;
+        // LovyanGFX's RGB bus ignores pclk_active_neg when configuring LCD_CAM.
+        lcd_ll_set_pixel_clock_edge(&LCD_CAM, bus.config().pclk_active_neg);
+        LCD_CAM.lcd_user.lcd_update = 1;
+        return true;
+    }
+#endif
+};
+#else
 class LGFX : public lgfx::LGFX_Device
 {
     lgfx::Panel_ST7789 _panel_instance;
@@ -58,3 +115,4 @@ public:
         setPanel(&_panel_instance);
     }
 };
+#endif

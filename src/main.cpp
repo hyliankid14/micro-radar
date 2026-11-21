@@ -15,9 +15,10 @@
 #include "AircraftManager.h"
 #include "DrawHelpers.h"
 #include "TouchManager.h"
+#include "DisplayLayout.h"
 
-constexpr int SCREEN_SIZE = 240;
-constexpr int SCREEN_SIZE_DIV_2 = (SCREEN_SIZE / 2);
+#ifndef CROWPANEL_7
+constexpr int SCREEN_SIZE_DIV_2 = DISPLAY_WIDTH / 2;
 constexpr int BACKLIGHT_PIN = 46;
 constexpr int PWR_LATCH_PIN = 2;
 constexpr int I2C_SDA_PIN = 42;
@@ -37,6 +38,7 @@ enum DeviceState {
 };
 
 DeviceState deviceState = STATE_ON;
+#endif
 float zoomRadius = 0.5;
 constexpr float ZOOM_STEP = 0.1;
 constexpr float ZOOM_MIN = 0.05;
@@ -45,6 +47,7 @@ constexpr float ZOOM_MAX = 180.0;
 constexpr unsigned long ZOOM_DISPLAY_MS = 2000;
 unsigned long zoomDisplayUntil = 0;
 
+#ifndef CROWPANEL_7
 constexpr int BATTERY_PIN = 1;
 constexpr float BATTERY_MULTIPLIER = 3.0f;
 
@@ -60,6 +63,7 @@ struct ButtonState {
 ButtonState btnBoot  = { BTN_BOOT, HIGH, HIGH, 0, 0, false };
 ButtonState btnPlus  = { BTN_PLUS, HIGH, HIGH, 0, 0, false };
 ButtonState btnPwr   = { BTN_PWR,  HIGH, HIGH, 0, 0, false };
+#endif
 
 LGFX tft;
 LGFX_Sprite backbuffer(&tft);
@@ -73,6 +77,7 @@ OpenSkyAuthTokenHandler authHandler(httpManager);
 
 AircraftManager aircraftManager(configServer, airlabsManager, authHandler, httpManager, &airportDb, tft);
 
+#ifndef CROWPANEL_7
 bool debounceButton(ButtonState& b)
 {
   bool raw = digitalRead(b.pin);
@@ -278,6 +283,7 @@ void drawZoomLevel(LGFX_Sprite& buf)
     buf.drawString(text, 4, 4);
   }
 }
+#endif
 
 void setup()
 {
@@ -292,6 +298,7 @@ void setup()
     Serial.println("[BOOT] Micro Radar starting...");
   }
 
+#ifndef CROWPANEL_7
   pinMode(PWR_LATCH_PIN, OUTPUT);
   digitalWrite(PWR_LATCH_PIN, HIGH);
   gpio_hold_dis((gpio_num_t)PWR_LATCH_PIN);
@@ -315,21 +322,37 @@ void setup()
   Serial.println(btnPwr.lastStable);
 
   deviceState = STATE_ON;
+#else
+  TouchManager::Initialise();
+  pinMode(2, OUTPUT);
+  digitalWrite(2, HIGH);
+  Serial.printf("[BOOT] PSRAM: %lu bytes\n", static_cast<unsigned long>(ESP.getPsramSize()));
+#endif
 
   if (tft.init()) {
     Serial.println("[BOOT] Display initialised");
+#ifdef CROWPANEL_7
+    Serial.printf("[BOOT] Display color depth: %d bits\n",
+                  static_cast<int>(tft.getColorDepth()) & lgfx::color_depth_t::bit_mask);
+#endif
   } else {
     Serial.println("[BOOT] Display init FAILED");
+    while (true) delay(1000);
   }
+#ifndef CROWPANEL_7
   tft.invertDisplay(true);
-
   Serial.printf("[BATT] Startup ADC voltage: %.3fV\n", readBatteryVoltage());
+#endif
 
   backbuffer.setColorDepth(8);
-  backbuffer.createSprite(SCREEN_SIZE, SCREEN_SIZE);
+  backbuffer.setPsram(true);
+  if (!backbuffer.createSprite(DISPLAY_WIDTH, DISPLAY_HEIGHT)) {
+    Serial.println("[BOOT] Framebuffer allocation FAILED");
+    while (true) delay(1000);
+  }
   backbuffer.fillScreen(lgfx::color888(0, 0, 0));
   backbuffer.setTextColor(lgfx::color888(0, 255, 0));
-  backbuffer.drawCentreString("Connecting to WiFi...", SCREEN_SIZE_DIV_2, SCREEN_SIZE_DIV_2);
+  backbuffer.drawCentreString("Connecting to WiFi...", DISPLAY_WIDTH / 2, DISPLAY_HEIGHT / 2);
   backbuffer.pushSprite(0, 0);
 
   WiFiManagerHelpers::ConfigureWiFiManager(wm, tft);
@@ -339,8 +362,11 @@ void setup()
   configTime(0, 0, "pool.ntp.org", "time.nist.gov");
   Serial.println("[BOOT] NTP sync requested (UTC)");
 
+#ifndef CROWPANEL_7
   TouchManager::Initialise();
+#endif
   configServer.Initialise();
+  airlabsManager.Initialise();
   
   // Initialize airport database
   if (airportDb.begin()) {
@@ -355,12 +381,14 @@ void setup()
   Serial.print("[BOOT] Aircraft manager ready, initial radius: ");
   Serial.println(zoomRadius, 2);
 
+#ifndef CROWPANEL_7
   Wire.begin(I2C_SDA_PIN, I2C_SCL_PIN);
   Serial.println("[BOOT] I2C bus initialised");
+#endif
 
   backbuffer.fillScreen(lgfx::color888(0, 0, 0));
   backbuffer.setTextColor(lgfx::color888(0, 255, 0));
-  backbuffer.drawCentreString("Syncing UTC...", SCREEN_SIZE_DIV_2, SCREEN_SIZE_DIV_2);
+  backbuffer.drawCentreString("Syncing UTC...", DISPLAY_WIDTH / 2, DISPLAY_HEIGHT / 2);
   backbuffer.pushSprite(0, 0);
   Serial.print("[NTP] UTC time: ");
   Serial.println((long)time(nullptr));
@@ -375,6 +403,7 @@ void setup()
 
 void loop()
 {
+#ifndef CROWPANEL_7
   handlePwrButton();
   handleZoomButtons();
   checkLongPress();
@@ -384,6 +413,7 @@ void loop()
     delay(20);
     return;
   }
+#endif
 
   aircraftManager.Update();
 
@@ -397,6 +427,9 @@ void loop()
     unsigned long now = millis();
 
     if (touch.valid) {
+#ifdef CROWPANEL_7
+      aircraftManager.NoteInteraction(now);
+#endif
       if (!wasTouching) {
         touchDownMs = now;
         Serial.printf("[TOUCH] Press at %d,%d\n", touch.x, touch.y);
@@ -404,11 +437,29 @@ void loop()
       wasTouching = true;
       lastTouchX = touch.x;
       lastTouchY = touch.y;
+#ifdef CROWPANEL_7
+      if (touch.x >= 650 && touch.y >= 444 && now - touchDownMs >= 3000) {
+        Serial.println("[RESET] Clearing WiFi credentials");
+        wm.resetSettings();
+        ESP.restart();
+      }
+#endif
     } else if (wasTouching) {
       unsigned long duration = now - touchDownMs;
       wasTouching = false;
       if (duration < TAP_MAX_MS) {
         Serial.printf("[TOUCH] Tap at %d,%d (hold=%lums)\n", lastTouchX, lastTouchY, duration);
+#ifdef CROWPANEL_7
+        if (lastTouchY >= 444 && lastTouchX < 200) {
+          aircraftManager.adjustRadius(lastTouchX < 100 ? -ZOOM_STEP : ZOOM_STEP);
+          zoomRadius = aircraftManager.getRadius();
+        } else if (lastTouchX >= 452 && aircraftManager.IsDetailOpen()) {
+          aircraftManager.DismissDetail();
+        } else if (lastTouchX < RADAR_X + RADAR_SIZE && lastTouchY < RADAR_Y + RADAR_SIZE) {
+          String hit = aircraftManager.HitTestAircraft(lastTouchX, lastTouchY);
+          if (!hit.isEmpty()) aircraftManager.SelectFlight(hit);
+        }
+#else
         if (aircraftManager.IsDetailOpen()) {
           aircraftManager.DismissDetail();
         } else {
@@ -417,24 +468,51 @@ void loop()
             aircraftManager.SelectFlight(hit);
           }
         }
+#endif
       }
+#ifdef CROWPANEL_7
+      aircraftManager.NoteInteraction(millis());
+#endif
     }
   }
+
+#ifdef CROWPANEL_7
+  aircraftManager.UpdateIdleSelection(millis());
+#endif
 
   backbuffer.fillScreen(lgfx::color888(0, 0, 0));
   String renderScanlines = configServer.GetStoredString("scanline");
   if (renderScanlines.isEmpty() || renderScanlines == "true") {
     DrawScanLines(backbuffer,
-      SCREEN_SIZE_DIV_2 - 1,
-      SCREEN_SIZE_DIV_2 - 1,
-      SCREEN_SIZE_DIV_2 - 1 + (std::cos(millis() / 3000.0f) * (SCREEN_SIZE_DIV_2 - 1)),
-      SCREEN_SIZE_DIV_2 - 1 + (std::sin(millis() / 3000.0f) * (SCREEN_SIZE_DIV_2 - 1)),
-      20, 128, 5, SCREEN_SIZE_DIV_2 - 1);
+      RADAR_CENTRE_X,
+      RADAR_CENTRE_Y,
+      RADAR_CENTRE_X + (std::cos(millis() / 3000.0f) * RADAR_RADIUS),
+      RADAR_CENTRE_Y + (std::sin(millis() / 3000.0f) * RADAR_RADIUS),
+      20, 128, 5, RADAR_RADIUS);
   }
   aircraftManager.Draw(backbuffer);
   if (aircraftManager.IsDetailOpen()) {
     aircraftManager.DrawFlightDetail(backbuffer);
   }
+#ifdef CROWPANEL_7
+  if (!aircraftManager.IsDetailOpen()) {
+    backbuffer.drawRect(452, 8, 340, 432, lgfx::color888(0, 100, 0));
+    backbuffer.setTextFont(2);
+    backbuffer.setTextColor(lgfx::color888(0, 220, 0));
+    backbuffer.drawString("MICRO RADAR", 468, 24);
+    backbuffer.drawString("Tap an aircraft for details", 468, 60);
+    backbuffer.setTextFont(1);
+  }
+  backbuffer.setTextFont(2);
+  backbuffer.setTextColor(lgfx::color888(0, 220, 0));
+  backbuffer.drawRect(8, 444, 88, 32, lgfx::color888(0, 180, 0));
+  backbuffer.drawRect(104, 444, 88, 32, lgfx::color888(0, 180, 0));
+  backbuffer.drawCentreString("ZOOM +", 52, 451);
+  backbuffer.drawCentreString("ZOOM -", 148, 451);
+  backbuffer.drawString("Radius: " + String(zoomRadius, 2) + " deg", 208, 451);
+  backbuffer.drawRightString("Hold to reset WiFi", 792, 451);
+  backbuffer.setTextFont(1);
+#else
   drawZoomLevel(backbuffer);
   {
     float v = readBatteryVoltage();
@@ -447,5 +525,9 @@ void loop()
     }
     drawBatteryIndicator(backbuffer, level);
   }
+#endif
   backbuffer.pushSprite(0, 0);
+#ifdef CROWPANEL_7
+  delay(20);
+#endif
 }

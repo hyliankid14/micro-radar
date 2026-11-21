@@ -2,9 +2,7 @@
 #include <Preferences.h>
 #include <time.h>
 #include <algorithm>
-
-constexpr int SCREEN_SIZE = 240;
-constexpr int SCREEN_SIZE_DIV_2 = (SCREEN_SIZE / 2);
+#include "DisplayLayout.h"
 
 #include <ArduinoJson.h>
 #include "models/Aircraft.h"
@@ -55,6 +53,12 @@ void AircraftManager::Initialise()
     lat = configServer.GetStoredString("latitude").toDouble();
     lon = configServer.GetStoredString("longitude").toDouble();
     rad = configServer.GetStoredString("radius").toDouble();
+#ifdef CROWPANEL_7
+    if (rad <= 0.0) {
+        rad = 1.0;
+        Serial.println("[RADAR] No valid radius configured; using 1 degree");
+    }
+#endif
 
     const String unitsStr = configServer.GetStoredString("units");
     units = (unitsStr == "imperial") ? IMPERIAL : METRIC;
@@ -87,6 +91,9 @@ void AircraftManager::Initialise()
 
 void AircraftManager::Draw(LGFX_Sprite& backbuffer)
 {
+#ifdef CROWPANEL_7
+    backbuffer.setClipRect(RADAR_X, RADAR_Y, RADAR_SIZE, RADAR_SIZE);
+#endif
     DrawRadarCircles(backbuffer);
 
     for (auto& [icao, tracked] : trackedAircraft) {
@@ -113,16 +120,16 @@ void AircraftManager::Draw(LGFX_Sprite& backbuffer)
             backbuffer.drawCircle(x, y, 10, lgfx::color888(0, 255, 255));
         }
     }
+#ifdef CROWPANEL_7
+    backbuffer.clearClipRect();
+#endif
 }
 
 void AircraftManager::DrawRadarCircles(LGFX_Sprite& backbuffer) const
 {
-    constexpr int CENTRE = SCREEN_SIZE_DIV_2 - 1;
-    constexpr int OUTER = SCREEN_SIZE_DIV_2 - 1;
-
-    backbuffer.drawCircle(CENTRE, CENTRE, OUTER, lgfx::color888(0, 200, 0));
-    backbuffer.drawCircle(CENTRE, CENTRE, (OUTER / 3) * 2, lgfx::color888(0, 64, 0));
-    backbuffer.drawCircle(CENTRE, CENTRE, OUTER / 3, lgfx::color888(0, 32, 0));
+    backbuffer.drawCircle(RADAR_CENTRE_X, RADAR_CENTRE_Y, RADAR_RADIUS, lgfx::color888(0, 200, 0));
+    backbuffer.drawCircle(RADAR_CENTRE_X, RADAR_CENTRE_Y, (RADAR_RADIUS / 3) * 2, lgfx::color888(0, 64, 0));
+    backbuffer.drawCircle(RADAR_CENTRE_X, RADAR_CENTRE_Y, RADAR_RADIUS / 3, lgfx::color888(0, 32, 0));
 }
 
 void AircraftManager::adjustRadius(double delta)
@@ -148,8 +155,8 @@ std::pair<int, int> AircraftManager::ProjectCoordinateToScreen(float predLat, fl
     const float normLon = (dLon + rad) / (2.0f * rad);
     const float normLat = (dLat + rad) / (2.0f * rad);
 
-    const int x = static_cast<int>(normLon * SCREEN_SIZE);
-    const int y = static_cast<int>(SCREEN_SIZE - (normLat * SCREEN_SIZE));
+    const int x = RADAR_X + static_cast<int>(normLon * RADAR_SIZE);
+    const int y = RADAR_Y + static_cast<int>(RADAR_SIZE - (normLat * RADAR_SIZE));
 
     return { x, y };
 }
@@ -189,6 +196,10 @@ void AircraftManager::DrawAircraftTriangle(LGFX_Sprite& backbuffer, int x, int y
 
 String AircraftManager::HitTestAircraft(int tapX, int tapY) const
 {
+#ifdef CROWPANEL_7
+    if (tapX < RADAR_X || tapX >= RADAR_X + RADAR_SIZE ||
+        tapY < RADAR_Y || tapY >= RADAR_Y + RADAR_SIZE) return "";
+#endif
     String nearestIcao;
     float nearestDist = 1e9f;
 
@@ -207,10 +218,15 @@ String AircraftManager::HitTestAircraft(int tapX, int tapY) const
         int bottom = max(sy, sy + textPadY) + bubblePad;
 
         if (tapX >= left && tapX <= right && tapY >= top && tapY <= bottom) {
+#ifdef CROWPANEL_7
+            float ddx = sx - tapX;
+            float ddy = sy - tapY;
+#else
             float cx = (left + right) / 2.0f;
             float cy = (top + bottom) / 2.0f;
             float ddx = sx - cx;
             float ddy = sy - cy;
+#endif
             float dist = ddx * ddx + ddy * ddy;
             if (dist < nearestDist) {
                 nearestDist = dist;
@@ -306,6 +322,9 @@ bool AircraftManager::FetchFlightDetailAirlabs(const String& icao)
 
 void AircraftManager::SelectFlight(const String& icao24)
 {
+#ifdef CROWPANEL_7
+    automaticSelection = false;
+#endif
     selectedIcao = icao24;
     selectedDetail = FlightDetail{};
     
@@ -320,6 +339,9 @@ void AircraftManager::SelectFlight(const String& icao24)
         }
         selectedDetail.attempted = true;
     }
+#ifdef CROWPANEL_7
+    flightDetailCache[icao24] = selectedDetail;
+#endif
     
     Serial.println("[FLIGHT] Detail processing complete");
 }
@@ -435,6 +457,9 @@ void AircraftManager::Update()
         for (auto it = trackedAircraft.begin(); it != trackedAircraft.end(); ) {
             if (now - it->second.lastSeen > AIRCRAFT_EXPIRY_MS) {
                 Serial.printf("[RADAR] Expired stale track: %s\n", it->first.c_str());
+#ifdef CROWPANEL_7
+                flightDetailCache.erase(it->first);
+#endif
                 it = trackedAircraft.erase(it);
             } else {
                 ++it;
@@ -444,13 +469,21 @@ void AircraftManager::Update()
         Serial.printf("[RADAR] %d aircraft tracked\n", trackedAircraft.size());
     }
 
-    if (IsDetailOpen() && selectedIcao != lastSingleFetchHex) {
+    if (IsDetailOpen()
+#ifdef CROWPANEL_7
+        && !automaticSelection
+#endif
+        && selectedIcao != lastSingleFetchHex) {
         lastSingleFetch = 0;
         lastSingleFetchHex = selectedIcao;
     }
 
     unsigned long nowSingle = millis();
-    if (IsDetailOpen() && (nowSingle - lastSingleFetch >= SINGLE_FETCH_INTERVAL)) {
+    if (IsDetailOpen()
+#ifdef CROWPANEL_7
+        && !automaticSelection
+#endif
+        && (nowSingle - lastSingleFetch >= SINGLE_FETCH_INTERVAL)) {
         lastSingleFetch = nowSingle;
 
         Serial.printf("[RADAR] Refreshing selected flight: %s\n", selectedIcao.c_str());
@@ -470,6 +503,60 @@ void AircraftManager::DismissDetail()
     selectedIcao = "";
     selectedDetail = FlightDetail{};
 }
+
+#ifdef CROWPANEL_7
+bool AircraftManager::IsAircraftVisible(const TrackedAircraft& tracked) const
+{
+    if (tracked.state.onGround) return false;
+    auto [predLat, predLon] = tracked.GetDisplayPosition();
+    auto [x, y] = ProjectCoordinateToScreen(predLat, predLon);
+    return x >= RADAR_X && x < RADAR_X + RADAR_SIZE &&
+           y >= RADAR_Y && y < RADAR_Y + RADAR_SIZE;
+}
+
+void AircraftManager::NoteInteraction(unsigned long now)
+{
+    lastInteractionMs = now;
+    lastRotationMs = now;
+    interactionPaused = true;
+}
+
+void AircraftManager::UpdateIdleSelection(unsigned long now)
+{
+    constexpr unsigned long IDLE_DELAY_MS = 15000;
+    constexpr unsigned long ROTATION_INTERVAL_MS = 10000;
+    auto selected = trackedAircraft.find(selectedIcao);
+    const bool missing = !selectedIcao.isEmpty() && selected == trackedAircraft.end();
+    if (interactionPaused && !missing && now - lastInteractionMs < IDLE_DELAY_MS) return;
+    interactionPaused = false;
+
+    if (selected != trackedAircraft.end() && IsAircraftVisible(selected->second) &&
+        now - lastRotationMs < ROTATION_INTERVAL_MS) return;
+
+    auto next = trackedAircraft.upper_bound(selectedIcao);
+    for (size_t i = 0; i < trackedAircraft.size(); ++i) {
+        if (next == trackedAircraft.end()) next = trackedAircraft.begin();
+        if (IsAircraftVisible(next->second)) {
+            if (next->first != selectedIcao) {
+                selectedIcao = next->first;
+                auto cached = flightDetailCache.find(selectedIcao);
+                selectedDetail = cached == flightDetailCache.end() ? FlightDetail{} : cached->second;
+                Serial.printf("[FLIGHT] Automatically selected %s\n", selectedIcao.c_str());
+            }
+            automaticSelection = true;
+            lastRotationMs = now;
+            return;
+        }
+        ++next;
+    }
+
+    if (!selectedIcao.isEmpty()) {
+        selectedIcao = "";
+        selectedDetail = FlightDetail{};
+    }
+    automaticSelection = true;
+}
+#endif
 
 String AircraftManager::LookupAirline(const String& callsign) const
 {
@@ -562,6 +649,64 @@ void AircraftManager::DrawFlightDetail(LGFX_Sprite& buf) const
 
     const TrackedAircraft& tracked = it->second;
 
+#ifdef CROWPANEL_7
+    const int px = 452, py = 8, pw = 340, ph = 432;
+    buf.fillRect(px, py, pw, ph, lgfx::color888(0, 16, 0));
+    buf.drawRect(px, py, pw, ph, lgfx::color888(0, 220, 0));
+    buf.setClipRect(px + 4, py + 4, pw - 8, ph - 8);
+    buf.setTextFont(2);
+    buf.setTextSize(1);
+    buf.setTextColor(lgfx::color888(0, 255, 0));
+    int x = px + 12;
+    int y = py + 12;
+    int lh = buf.fontHeight() + 6;
+    buf.drawString(tracked.state.callsign.isEmpty() ? selectedIcao : tracked.state.callsign, x, y);
+    buf.drawRightString("CLOSE", px + pw - 12, y);
+    y += lh;
+    buf.drawString(LookupAirline(tracked.state.callsign), x, y);
+    y += lh;
+    buf.drawString("ICAO: " + selectedIcao, x, y);
+    y += lh + 6;
+    buf.drawString("Speed: " + String(ConvertSpeed(tracked.state.velocity), 0) + " " + SpeedUnit(), x, y);
+    y += lh;
+    buf.drawString("Altitude: " + String(ConvertAltitude(tracked.state.baroAltitude), 0) + " " + AltUnit(), x, y);
+    y += lh;
+    buf.drawString("Heading: " + String(tracked.state.trueTrack, 0) + " deg", x, y);
+    y += lh + 8;
+    buf.drawLine(x, y, px + pw - 12, y, lgfx::color888(0, 120, 0));
+    y += 8;
+    buf.setTextColor(lgfx::color888(0, 220, 180));
+    if (selectedDetail.loaded) {
+        String from = selectedDetail.departureAirport;
+        if (!selectedDetail.departureAirportFull.isEmpty()) from += " - " + selectedDetail.departureAirportFull;
+        String to = selectedDetail.arrivalAirport;
+        if (!selectedDetail.arrivalAirportFull.isEmpty()) to += " - " + selectedDetail.arrivalAirportFull;
+        y = DrawWrappedText(buf, x, y, "From: " + (from.isEmpty() ? String("unknown") : from), pw - 24, lh);
+        y = DrawWrappedText(buf, x, y, "To: " + (to.isEmpty() ? String("unknown") : to), pw - 24, lh);
+        if (selectedDetail.departureTime > 0) {
+            time_t t = selectedDetail.departureTime;
+            struct tm tm;
+            gmtime_r(&t, &tm);
+            char timeText[16];
+            strftime(timeText, sizeof(timeText), "%H:%M UTC", &tm);
+            buf.drawString(String("Departed: ") + timeText, x, y);
+            y += lh;
+        }
+        if (selectedDetail.arrivalTime > 0) {
+            time_t t = selectedDetail.arrivalTime;
+            struct tm tm;
+            gmtime_r(&t, &tm);
+            char timeText[16];
+            strftime(timeText, sizeof(timeText), "%H:%M UTC", &tm);
+            buf.drawString(String("Arrived: ") + timeText, x, y);
+        }
+    } else {
+        buf.drawString(selectedDetail.attempted ? "Route lookup failed" :
+                       automaticSelection ? "Tap aircraft for route details" : "No route data available", x, y);
+    }
+    buf.clearClipRect();
+    buf.setTextFont(1);
+#else
     const int px = 15, py = 15, pw = 210, ph = 210;
 
     buf.fillRect(px, py, pw, ph, lgfx::color888(0, 16, 0));
@@ -674,4 +819,5 @@ void AircraftManager::DrawFlightDetail(LGFX_Sprite& buf) const
     buf.drawLine(px + 6, y - 1, px + pw - 6, y - 1, lgfx::color888(0, 120, 0));
     buf.setTextColor(lgfx::color888(0, 180, 180));
     buf.drawCentreString("Tap screen to dismiss", px + pw / 2, y);
+#endif
 }

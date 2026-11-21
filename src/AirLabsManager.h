@@ -41,6 +41,7 @@ private:
     
 public:
     AirLabsManager(ConfigurationWebServer& config, HttpRequestManager& httpManager);
+    void Initialise();
     
     bool updateSingle(const String& hex);
     bool lookupByCallsign(const String& callsign, AirLabsAircraft& out);
