@@ -15,6 +15,7 @@
 #include "AviationCatalog.h"
 #include "VectorArt.h"
 #include "MediaCacheManager.h"
+#include "NetWorker.h"
 
 class AircraftManager
 {
@@ -39,6 +40,12 @@ public:
         long departureTime = 0;
         long arrivalTime = 0;
         unsigned long fetchedMs = 0;
+
+        // Airframe metadata discovered during the lookup (applied on the UI thread)
+        String afReg;
+        String afType;
+        String afTypeDesc;
+        String afOwner;
     };
 
     struct RareCatchEntry {
@@ -75,7 +82,7 @@ private:
     String trackingProvider = "adsblol";
 
     DisplayViewMode viewMode = VIEW_RADAR_SPLIT;
-    ThemeId themeId = THEME_COCKPIT;
+    ThemeId themeId = THEME_RADAR_CRT;
     bool autoCycleViews = false;
     unsigned long lastViewCycleMs = 0;
     bool statsModalOpen = false;
@@ -83,6 +90,8 @@ private:
     String giftTitle = "SKY FRAME";
     String giftSubtitle = "Live Aviation Display";
     int tzOffsetMinutes = 0;
+    int dayBrightnessPct = 80;
+    int nightBrightnessPct = 10;   // used during night quiet hours; 0 = screen off
     bool nightDimEnabled = false;
     int nightStartHour = 23;
     int nightEndHour = 7;
@@ -121,6 +130,25 @@ private:
     LGFX& tft;
     MediaCacheManager mediaCache;
 
+    // ---- Background networking (all HTTP runs on the NetWorker task) ----
+    NetWorker net;
+    SemaphoreHandle_t resultMutex = nullptr;
+    std::map<String, FlightDetail> detailResults;   // completed lookups awaiting pickup
+    std::vector<Aircraft> areaResult;
+    bool areaReady = false;
+    bool areaOk = false;
+    Aircraft pinnedResult;
+    bool pinnedReady = false;
+    Aircraft singleResult;
+    bool singleReady = false;
+    String singleResultIcao;
+    uint32_t dataVersion = 0;            // bumps whenever visible data changes (drives redraws)
+
+    void ApplyNetworkResults();
+    void RequestFlightDetail(const String& icao, bool allowAirlabs, int prio);
+    void ApplyPinnedAircraft(const Aircraft& pinnedAc);
+    void PrefetchNextInRotation(unsigned long now);
+
     void DrawRadarCircles(LGFX_Sprite& backbuffer, const ThemePalette& theme) const;
     std::pair<int, int> ProjectCoordinateToScreen(float predLat, float predLon) const;
     void DrawAircraftInfo(LGFX_Sprite& backbuffer, int x, int y, const TrackedAircraft& tracked, const ThemePalette& theme, bool isSelected) const;
@@ -136,15 +164,15 @@ private:
     bool ParseAdsbLolAircraftObj(JsonVariant v, Aircraft& ac) const;
     bool FetchAreaAdsbLol(std::vector<Aircraft>& out);
     bool FetchAreaOpenSky(std::vector<Aircraft>& out);
-    bool FetchPinnedFlightAdsbLol();
+    bool FetchPinnedFlightAdsbLol(const String& query, Aircraft& outAc);
     void UpdateSpotterStats(const Aircraft& ac);
 
     void ResolveAirportNames(FlightDetail& detail) const;
-    bool FetchFlightDetailAdsbdb(const String& callsign, const String& icao, FlightDetail& detail);
+    bool FetchFlightDetailAdsbdb(const String& callsign, const String& icao, bool needAirframe, FlightDetail& detail);
     bool FetchFlightDetailHexdb(const String& callsign, FlightDetail& detail);
-    bool FetchFlightDetailAirlabs(const String& icao);
+    bool FetchFlightDetailAirlabs(const String& icao, const String& callsign, FlightDetail& detail);
     void PopulateFlightDetail(const String& icao, bool allowAirlabs);
-    bool FetchSingleAircraftOpenSky(const String& icao);
+    bool FetchSingleAircraftOpenSky(const String& icao, Aircraft& out);
 
     struct SortedFlightItem {
         String icao;
@@ -180,7 +208,19 @@ public:
     void Update();
     void Draw(LGFX_Sprite& backbuffer);
     void DrawFlightDetail(LGFX_Sprite& backbuffer);
-    void ProcessBackgroundMedia() { mediaCache.ProcessPendingQueue(); }
+    // Monotonic counter: changes when new network data/images arrive (lets the UI redraw only when needed)
+    uint32_t ContentVersion() const { return dataVersion + mediaCache.Version(); }
+    NetWorker& Net() { return net; }
+
+    // Cheap fingerprint of everything that changes what is on screen besides continuous animation.
+    uint32_t RenderSignature() const {
+        uint32_t h = static_cast<uint32_t>(viewMode) * 31u + static_cast<uint32_t>(themeId);
+        h = h * 31u + (statsModalOpen ? 1u : 0u);
+        for (size_t i = 0; i < selectedIcao.length(); ++i) h = h * 131u + static_cast<uint8_t>(selectedIcao[i]);
+        h = h * 31u + ContentVersion();
+        return h;
+    }
+    bool IsAnimatedView() const { return viewMode == VIEW_RADAR_SPLIT; }
 
     double getRadius() const { return rad; }
     void adjustRadius(double delta);
@@ -222,6 +262,10 @@ public:
     String GetGiftTitle() const { return giftTitle; }
     String GetGiftSubtitle() const { return giftSubtitle; }
     bool IsNightQuietHours() const;
+
+    int GetBrightness() const { return dayBrightnessPct; }
+    int GetNightBrightness() const { return nightBrightnessPct; }
+    void SetBrightness(int pct, bool persist);
 
     const SpotterStats& GetSpotterStats() const { return stats; }
     String BuildStatusJson() const;

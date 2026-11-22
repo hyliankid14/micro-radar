@@ -37,17 +37,17 @@ namespace VectorArt
 
         buf.setTextColor(airline.textColor);
         if (h >= 34 && badgeCode.length() <= 3) {
-            buf.setTextFont(4);
+            UseFont(buf, 4);
             buf.setTextSize(1);
             int ty = y + (h - buf.fontHeight()) / 2 + 1;
             buf.drawString(badgeCode, x + 8, ty);
-            buf.setTextFont(1);
+            UseFont(buf, 1);
         } else {
-            buf.setTextFont(2);
+            UseFont(buf, 2);
             buf.setTextSize(1);
             int ty = y + (h - buf.fontHeight()) / 2;
             buf.drawString(badgeCode, x + 7, ty);
-            buf.setTextFont(1);
+            UseFont(buf, 1);
         }
     }
 
@@ -62,8 +62,18 @@ namespace VectorArt
         const String& reg,
         bool showAnnotations = true)
     {
-        // Background frame
+        // Background frame + subtle loading shimmer band across placeholder
         buf.fillRoundRect(x, y, w, h, 6, theme.bgSecondary);
+        {
+            int bandW = max(24, w / 5);
+            int period = w + bandW * 2;
+            int sweepX = x - bandW + static_cast<int>((millis() / 16) % max(1, period));
+            int sx0 = max(x + 2, sweepX);
+            int sx1 = min(x + w - 2, sweepX + bandW);
+            if (sx1 > sx0) {
+                buf.fillRect(sx0, y + 2, sx1 - sx0, h - 4, theme.bgRowAlt);
+            }
+        }
 
         // Subtle technical gridlines
         int gridStep = 20;
@@ -254,7 +264,7 @@ namespace VectorArt
         }
 
         if (showAnnotations) {
-            buf.setTextFont(1);
+            UseFont(buf, 1);
             buf.setTextSize(1);
             buf.setTextColor(theme.textMuted);
             String topLeft = !typeCode.isEmpty() ? ("TYPE // " + typeCode) : "SPEC // AIRCRAFT";

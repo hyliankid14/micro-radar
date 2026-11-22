@@ -46,8 +46,12 @@ The `crowpanel-7` PlatformIO environment supports the Elecrow CrowPanel Basic 7-
   - **AvioFrame Portrait Poster (`SPOTTER POSTER`)**: Full-screen gallery poster featuring large aircraft photography/schematics, carrier branding, origin/destination route progress bar, 6 avionics telemetry cards, and a mini compass locator radar.
 - **5 Color Themes**: **Midnight Cockpit** (EFIS cyan/magenta), **AvioFrame Gallery Light** (warm paper & vermilion ink), **Split-Flap Solari Amber**, **Technical Blueprint**, and **Classic Radar Green**.
 - **Real Aircraft Photos & Carrier Logos (PSRAM Cache + Vector Fallbacks)**:
-  - Automatically downloads real aircraft thumbnail photos via the free **Planespotters.net API** and carrier logos by IATA code into the 8 MB PSRAM, decoded into 16-bit RGB565 bitmaps.
-  - Instant procedural **vector aircraft silhouettes** (8 airframe categories: 4-engine superjumbo, twin-aisle widebody, narrowbody jet, regional turboprop, business jet, light GA prop, helicopter, military jet) and **stylized airline livery tail-fin badges** (140+ airlines mapped by 3-letter ICAO & 2-letter IATA codes) when loading or offline.
+  - Automatically downloads higher-resolution real aircraft photos (`thumbnail_large`, cached at 420×280) via the **Planespotters.net API** and carrier logos (cached at 160×64 with CDN fallback chain) into the 8 MB PSRAM, decoded into 16-bit RGB565 bitmaps and displayed across all views (including every row of the Departure Board) with photographer attribution.
+  - Instant procedural **vector aircraft silhouettes** with a loading shimmer (8 airframe categories: 4-engine superjumbo, twin-aisle widebody, narrowbody jet, regional turboprop, business jet, light GA prop, helicopter, military jet) and **stylized airline livery tail-fin badges** (140+ airlines mapped by 3-letter ICAO & 2-letter IATA codes) when loading or offline.
+- **Non-Blocking Core-0 Networking & Instant Flight Transitions**:
+  - Dedicated FreeRTOS background worker task on Core 0 handles all ADS-B polling, route lookups (`adsbdb`, `hexdb`, `AirLabs`), and image downloads off the UI thread, prefetches the next flight in rotation ahead of time, and uses dirty-flag rendering so switching aircraft is instant without UI pauses.
+- **PWM Backlight Brightness Controls & Auto-Dim Night Schedule**:
+  - On-screen toolbar sun button opens a gamma-corrected PWM brightness slider (5%–100%) with smooth fade transitions, plus daytime and night-quiet-hours brightness controls in the web UI.
 - **"Track a Flight" / Partner Flight Pinning**:
   - Pin any flight worldwide by Flight Number / Callsign (e.g. `BA117`, `BAW117`, `U28412`), Tail Registration (`G-XWBA`), or ICAO Hex from your phone — tracks the pinned flight live via `adsb.lol` even when thousands of miles outside your local radar radius.
 - **Easy Phone Setup & Live Remote Control (`http://microradar.local`)**:

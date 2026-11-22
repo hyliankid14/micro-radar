@@ -65,6 +65,9 @@ static String TruncateToWidth(LGFX_Sprite& buf, const String& text, int maxWidth
 void AircraftManager::Initialise()
 {
     ReloadRuntimeSettings();
+    if (!resultMutex) resultMutex = xSemaphoreCreateMutex();
+    net.Begin();
+    mediaCache.Begin(&net);
 }
 
 void AircraftManager::ReloadRuntimeSettings()
@@ -92,7 +95,7 @@ void AircraftManager::ReloadRuntimeSettings()
     mediaCache.SetMediaEnabled(mediaStr.isEmpty() || mediaStr == "true");
 
     const String storedTheme = configServer.GetStoredString("theme");
-    themeId = storedTheme.isEmpty() ? THEME_COCKPIT : ParseThemeId(storedTheme);
+    themeId = storedTheme.isEmpty() ? THEME_RADAR_CRT : ParseThemeId(storedTheme);
 
     const String storedView = configServer.GetStoredString("view-mode");
     viewMode = storedView.isEmpty() ? VIEW_RADAR_SPLIT : ParseViewMode(storedView);
@@ -110,6 +113,11 @@ void AircraftManager::ReloadRuntimeSettings()
 
     const String tzStr = configServer.GetStoredString("tz-offset");
     tzOffsetMinutes = tzStr.isEmpty() ? 0 : tzStr.toInt();
+
+    const String brStr = configServer.GetStoredString("brightness");
+    const String nbStr = configServer.GetStoredString("night-brightness");
+    dayBrightnessPct = brStr.isEmpty() ? 80 : constrain(brStr.toInt(), 5, 100);
+    nightBrightnessPct = nbStr.isEmpty() ? 10 : constrain(nbStr.toInt(), 0, 100);
 
     nightDimEnabled = (configServer.GetStoredString("night-dim") == "true");
     const String nsStr = configServer.GetStoredString("night-start");
@@ -204,6 +212,12 @@ void AircraftManager::SetPinnedFlightQuery(const String& query, bool persist)
         lastPinnedFetchMs = 0; // trigger immediate fetch
         Serial.printf("[PIN] Pinned flight set to: %s\n", pinnedQuery.c_str());
     }
+}
+
+void AircraftManager::SetBrightness(int pct, bool persist)
+{
+    dayBrightnessPct = constrain(pct, 5, 100);
+    if (persist) configServer.SetStoredString("brightness", String(dayBrightnessPct));
 }
 
 bool AircraftManager::IsNightQuietHours() const
@@ -404,7 +418,7 @@ void AircraftManager::DrawRadarCircles(LGFX_Sprite& backbuffer, const ThemePalet
     backbuffer.fillCircle(RADAR_CENTRE_X, RADAR_CENTRE_Y, 3, theme.textAccent);
 
     // Cardinal compass labels
-    backbuffer.setTextFont(1);
+    UseFont(backbuffer, 1);
     backbuffer.setTextSize(1);
     backbuffer.setTextColor(theme.textMuted);
     backbuffer.drawCentreString("N", RADAR_CENTRE_X, RADAR_Y + 6);
@@ -439,7 +453,7 @@ void AircraftManager::DrawAircraftInfo(LGFX_Sprite& backbuffer, int x, int y, co
     const float speed = ConvertSpeed(tracked.state.velocity);
     const float alt = ConvertAltitude(tracked.state.baroAltitude);
 
-    backbuffer.setTextFont(1);
+    UseFont(backbuffer, 1);
     backbuffer.setTextSize(1);
     backbuffer.setTextColor(isSelected ? theme.textPrimary : theme.textSecondary);
 
@@ -533,7 +547,7 @@ void AircraftManager::DrawSplitRadarView(LGFX_Sprite& backbuffer, const ThemePal
     // Top-left radar overlay badge: active flight count
     backbuffer.fillRoundRect(RADAR_X + 8, RADAR_Y + 8, 108, 22, 4, theme.bgHeader);
     backbuffer.drawRoundRect(RADAR_X + 8, RADAR_Y + 8, 108, 22, 4, theme.borderSecondary);
-    backbuffer.setTextFont(1);
+    UseFont(backbuffer, 1);
     backbuffer.setTextColor(theme.textPrimary);
     backbuffer.drawString(String(GetSortedActiveFlights().size()) + " AIRBORNE", RADAR_X + 16, RADAR_Y + 15);
 
@@ -561,12 +575,12 @@ void AircraftManager::DrawIdleWelcomePanel(LGFX_Sprite& buf, const ThemePalette&
 
     // Header banner
     buf.fillRoundRect(px + 2, py + 2, pw - 4, 54, 6, theme.bgHeader);
-    buf.setTextFont(4);
+    UseFont(buf, 4);
     buf.setTextSize(1);
     buf.setTextColor(theme.isLight ? lgfx::color888(250, 250, 250) : theme.textPrimary);
     buf.drawString(TruncateToWidth(buf, giftTitle, pw - 24), px + 14, py + 8);
 
-    buf.setTextFont(2);
+    UseFont(buf, 2);
     buf.setTextColor(theme.isLight ? lgfx::color888(210, 220, 235) : theme.textSecondary);
     buf.drawString(TruncateToWidth(buf, giftSubtitle, pw - 24), px + 14, py + 34);
 
@@ -574,12 +588,12 @@ void AircraftManager::DrawIdleWelcomePanel(LGFX_Sprite& buf, const ThemePalette&
     const int x = px + 14;
 
     // Status message
-    buf.setTextFont(2);
+    UseFont(buf, 2);
     if (!HasLocationConfigured()) {
         buf.setTextColor(theme.textWarning);
         buf.drawString("Setup Required: Scan QR Below", x, y);
         y += 20;
-        buf.setTextFont(1);
+        UseFont(buf, 1);
         buf.setTextColor(theme.textMuted);
         buf.drawString("Set home coordinates with 1 tap on your phone", x, y);
         y += 16;
@@ -592,7 +606,7 @@ void AircraftManager::DrawIdleWelcomePanel(LGFX_Sprite& buf, const ThemePalette&
             buf.drawString(String(activeCount) + " aircraft in range — tap to inspect", x, y);
         }
         y += 20;
-        buf.setTextFont(1);
+        UseFont(buf, 1);
         buf.setTextColor(theme.textMuted);
         char coordBuf[64];
         float rangeDist = ConvertDistance(static_cast<float>(rad * 111.32));
@@ -608,11 +622,11 @@ void AircraftManager::DrawIdleWelcomePanel(LGFX_Sprite& buf, const ThemePalette&
     // Mini Spotter Stats summary card
     buf.fillRoundRect(x, y, pw - 28, 76, 6, theme.bgSecondary);
     buf.drawRoundRect(x, y, pw - 28, 76, 6, theme.borderSecondary);
-    buf.setTextFont(1);
+    UseFont(buf, 1);
     buf.setTextColor(theme.textAccent);
     buf.drawString("SESSION SPOTTER SUMMARY", x + 10, y + 8);
 
-    buf.setTextFont(2);
+    UseFont(buf, 2);
     buf.setTextColor(theme.textPrimary);
     buf.drawString("Spotted: " + String(stats.totalUniqueSeen), x + 10, y + 24);
     if (stats.closestDistKm < 99999.0f) {
@@ -640,12 +654,12 @@ void AircraftManager::DrawIdleWelcomePanel(LGFX_Sprite& buf, const ThemePalette&
 
     int infoX = qrX + qrBoxSize + 16;
     int infoW = (px + pw - 18) - infoX;
-    buf.setTextFont(2);
+    UseFont(buf, 2);
     buf.setTextColor(theme.textPrimary);
     buf.drawString("Phone Remote", infoX, y + 18);
     buf.drawString("& Easy Setup", infoX, y + 36);
 
-    buf.setTextFont(1);
+    UseFont(buf, 1);
     buf.setTextColor(theme.textSecondary);
     DrawWrappedText(buf, infoX, y + 60, "Scan QR to switch themes, pin a flight, or set GPS location.", infoW, 13, 4);
 
@@ -685,7 +699,7 @@ void AircraftManager::DrawFlightDetail(LGFX_Sprite& buf)
     mediaCache.DrawCarrierBadge(buf, x, py + 10, 74, 34, airline, theme);
 
     int titleX = x + 82;
-    buf.setTextFont(4);
+    UseFont(buf, 4);
     buf.setTextSize(1);
     buf.setTextColor(theme.isLight ? lgfx::color888(255, 255, 255) : theme.textPrimary);
     String mainCall = !tracked.state.callsign.isEmpty() ? tracked.state.callsign : selectedIcao;
@@ -694,22 +708,22 @@ void AircraftManager::DrawFlightDetail(LGFX_Sprite& buf)
     // Close / Pin pill in top right
     if (isPinned) {
         buf.fillRoundRect(px + pw - 74, py + 8, 62, 18, 4, theme.textPinned);
-        buf.setTextFont(1);
+        UseFont(buf, 1);
         buf.setTextColor(lgfx::color888(15, 15, 20));
         buf.drawCentreString("PINNED", px + pw - 43, py + 13);
     } else if (typeInfo.isRareCatch && !typeInfo.rareBadge.isEmpty()) {
         buf.fillRoundRect(px + pw - 86, py + 8, 74, 18, 4, theme.textWarning);
-        buf.setTextFont(1);
+        UseFont(buf, 1);
         buf.setTextColor(lgfx::color888(15, 15, 20));
         buf.drawCentreString(typeInfo.rareBadge, px + pw - 49, py + 13);
     } else {
         buf.drawRoundRect(px + pw - 58, py + 8, 46, 18, 4, theme.borderSecondary);
-        buf.setTextFont(1);
+        UseFont(buf, 1);
         buf.setTextColor(theme.isLight ? lgfx::color888(220, 225, 235) : theme.textMuted);
         buf.drawCentreString("CLOSE", px + pw - 35, py + 13);
     }
 
-    buf.setTextFont(2);
+    UseFont(buf, 2);
     buf.setTextColor(theme.isLight ? lgfx::color888(215, 225, 240) : theme.textSecondary);
     buf.drawString(TruncateToWidth(buf, airline.name, pw - 98), titleX, py + 32);
 
@@ -730,10 +744,10 @@ void AircraftManager::DrawFlightDetail(LGFX_Sprite& buf)
         float brg = AviationCatalog::ComputeBearingDeg(lat, lon, predLat, predLon);
         String distText = String(ConvertDistance(distKm), distKm < 10.0f ? 1 : 0) + " " + DistUnit() + " " + AviationCatalog::BearingToCardinal(brg);
 
-        int pillW = distText.length() * 6 + 14;
-        buf.fillRoundRect(x + innerW - pillW - 6, y + 20, pillW, 16, 4, theme.bgHeader);
-        buf.drawRoundRect(x + innerW - pillW - 6, y + 20, pillW, 16, 4, theme.borderPrimary);
-        buf.setTextFont(1);
+        UseFont(buf, 1);
+        int pillW = max(58, static_cast<int>(buf.textWidth(distText)) + 16);
+        buf.fillRoundRect(x + innerW - pillW - 6, y + 20, pillW, 18, 4, theme.bgHeader);
+        buf.drawRoundRect(x + innerW - pillW - 6, y + 20, pillW, 18, 4, theme.borderPrimary);
         buf.setTextColor(theme.isLight ? lgfx::color888(255, 255, 255) : theme.textAccent);
         buf.drawCentreString(distText, x + innerW - pillW / 2 - 6, y + 24);
     }
@@ -748,7 +762,7 @@ void AircraftManager::DrawFlightDetail(LGFX_Sprite& buf)
     String depCode = !selectedDetail.departureAirport.isEmpty() ? selectedDetail.departureAirport : "---";
     String arrCode = !selectedDetail.arrivalAirport.isEmpty() ? selectedDetail.arrivalAirport : "---";
 
-    buf.setTextFont(4);
+    UseFont(buf, 4);
     buf.setTextColor(theme.textPrimary);
     buf.drawString(depCode, x + 12, y + 8);
     buf.drawRightString(arrCode, x + innerW - 12, y + 8);
@@ -765,16 +779,16 @@ void AircraftManager::DrawFlightDetail(LGFX_Sprite& buf)
     VectorArt::DrawRouteProgressBar(buf, x + 76, y + 14, innerW - 152, progressPct, theme);
 
     // Progress % or Flight code above/below bar
-    buf.setTextFont(1);
+    UseFont(buf, 1);
     buf.setTextColor(theme.textAccent);
     if (progressPct >= 0.0f && remKm > 0.0f) {
         String remText = String(ConvertDistance(remKm), 0) + " " + DistUnit() + " left";
         if (tracked.state.velocity > 25.0f) {
             int remMins = static_cast<int>((remKm * 1000.0f) / (tracked.state.velocity * 60.0f));
             if (remMins >= 60) {
-                remText += " · " + String(remMins / 60) + "h" + String(remMins % 60) + "m";
+                remText += " | " + String(remMins / 60) + "h" + String(remMins % 60) + "m";
             } else if (remMins > 0) {
-                remText += " · " + String(remMins) + "m";
+                remText += " | " + String(remMins) + "m";
             }
         }
         buf.drawCentreString(remText, x + innerW / 2, y + 31);
@@ -787,7 +801,7 @@ void AircraftManager::DrawFlightDetail(LGFX_Sprite& buf)
     }
 
     // Full airport / city names
-    buf.setTextFont(2);
+    UseFont(buf, 2);
     buf.setTextColor(theme.textSecondary);
     String depLabel = !selectedDetail.departureCity.isEmpty()
         ? selectedDetail.departureCity
@@ -801,7 +815,7 @@ void AircraftManager::DrawFlightDetail(LGFX_Sprite& buf)
     buf.drawRightString(arrTrunc, x + innerW - 10, y + 48);
 
     // Full airport subtitle line
-    buf.setTextFont(1);
+    UseFont(buf, 1);
     buf.setTextColor(theme.textMuted);
     if (!selectedDetail.departureAirportFull.isEmpty()) {
         buf.drawString(TruncateToWidth(buf, selectedDetail.departureAirportFull, innerW - 20), x + 10, y + 68);
@@ -819,16 +833,17 @@ void AircraftManager::DrawFlightDetail(LGFX_Sprite& buf)
     auto drawTelemetryCell = [&](int cx, int cy, const char* label, const String& val, const String& subVal) {
         buf.fillRoundRect(cx, cy, cellW, cellH, 5, theme.bgSecondary);
         buf.drawRoundRect(cx, cy, cellW, cellH, 5, theme.borderSecondary);
-        buf.setTextFont(1);
+        UseFont(buf, 1);
+        int subW = subVal.isEmpty() ? 0 : (static_cast<int>(buf.textWidth(subVal)) + 10);
         buf.setTextColor(theme.textMuted);
-        buf.drawString(label, cx + 8, cy + 5);
+        buf.drawString(TruncateToWidth(buf, label, cellW - 16 - subW), cx + 8, cy + 5);
         if (!subVal.isEmpty()) {
             buf.setTextColor(theme.textAccent);
             buf.drawRightString(subVal, cx + cellW - 8, cy + 5);
         }
-        buf.setTextFont(2);
+        UseFont(buf, 2);
         buf.setTextColor(theme.textPrimary);
-        buf.drawString(TruncateToWidth(buf, val, cellW - 14), cx + 8, cy + 19);
+        buf.drawString(TruncateToWidth(buf, val, cellW - 16), cx + 8, cy + 21);
     };
 
     const float alt = ConvertAltitude(tracked.state.baroAltitude);
@@ -849,9 +864,9 @@ void AircraftManager::DrawFlightDetail(LGFX_Sprite& buf)
     String sqkStr = !tracked.state.squawk.isEmpty() ? ("SQK " + tracked.state.squawk) : ("HEX " + selectedIcao);
 
     drawTelemetryCell(x, y, "HEADING", String(tracked.state.trueTrack, 0) + " deg", hdgCard);
-    drawTelemetryCell(x + cellW + 8, y, "TAIL / TRANSPONDER", regOrHex, sqkStr);
+    drawTelemetryCell(x + cellW + 8, y, "TAIL / SQUAWK", regOrHex, sqkStr);
 
-    buf.setTextFont(1);
+    UseFont(buf, 1);
 }
 
 void AircraftManager::DrawDepartureBoardView(LGFX_Sprite& buf, const ThemePalette& theme)
@@ -867,13 +882,13 @@ void AircraftManager::DrawDepartureBoardView(LGFX_Sprite& buf, const ThemePalett
 
     // Flap-style departure icon box
     buf.fillRoundRect(bx + 12, by + 9, 32, 30, 4, theme.textAccent);
-    buf.setTextFont(2);
+    UseFont(buf, 2);
     buf.setTextColor(lgfx::color888(15, 15, 20));
     buf.drawCentreString("AIR", bx + 28, by + 16);
 
-    buf.setTextFont(4);
+    UseFont(buf, 4);
     buf.setTextColor(theme.isLight ? lgfx::color888(255, 255, 255) : theme.textPrimary);
-    buf.drawString(TruncateToWidth(buf, giftTitle + " — LIVE OVERHEAD BOARD", 520), bx + 54, by + 11);
+    buf.drawString(TruncateToWidth(buf, giftTitle + " | LIVE OVERHEAD BOARD", 520), bx + 54, by + 11);
 
     // Live UTC / Local clock & flight count on right of header
     time_t nowUtc = time(nullptr);
@@ -884,7 +899,7 @@ void AircraftManager::DrawDepartureBoardView(LGFX_Sprite& buf, const ThemePalett
         gmtime_r(&localT, &tmbuf);
         strftime(clockText, sizeof(clockText), "%H:%M:%S", &tmbuf);
     }
-    buf.setTextFont(4);
+    UseFont(buf, 4);
     buf.setTextColor(theme.textAccent);
     buf.drawRightString(clockText, bx + bw - 14, by + 11);
 
@@ -901,7 +916,7 @@ void AircraftManager::DrawDepartureBoardView(LGFX_Sprite& buf, const ThemePalett
     const int cSpeed   = bx + 628;
     const int cDist    = bx + 704;
 
-    buf.setTextFont(1);
+    UseFont(buf, 1);
     buf.setTextColor(theme.textMuted);
     buf.drawString("CARRIER",       cCarrier, colY + 7);
     buf.drawString("FLIGHT",        cFlight,  colY + 7);
@@ -917,30 +932,25 @@ void AircraftManager::DrawDepartureBoardView(LGFX_Sprite& buf, const ThemePalett
     const int maxRows = 7;
 
     if (list.empty()) {
-        buf.setTextFont(4);
+        UseFont(buf, 4);
         buf.setTextColor(theme.textMuted);
         buf.drawCentreString("NO AIRCRAFT CURRENTLY IN RANGE", bx + bw / 2, by + bh / 2 - 20);
-        buf.setTextFont(2);
+        UseFont(buf, 2);
         buf.setTextColor(theme.textSecondary);
         buf.drawCentreString("Increase zoom radius or pin a flight from http://microradar.local", bx + bw / 2, by + bh / 2 + 16);
-        buf.setTextFont(1);
+        UseFont(buf, 1);
         return;
     }
 
-    // Passively lookup route for the top un-attempted row every cooldown interval
+    // Passively queue route lookup for the top un-attempted row every cooldown interval
     unsigned long now = millis();
     if (now - lastRouteLookupMs >= ROUTE_LOOKUP_COOLDOWN_MS) {
         for (size_t i = 0; i < min((size_t)maxRows, list.size()); ++i) {
             const String& icao = list[i].icao;
             auto cached = flightDetailCache.find(icao);
-            if (cached == flightDetailCache.end() || !cached->second.attempted) {
-                String prevSel = selectedIcao;
-                FlightDetail prevDet = selectedDetail;
-                PopulateFlightDetail(icao, false);
-                if (!prevSel.isEmpty() && prevSel != icao) {
-                    selectedIcao = prevSel;
-                    selectedDetail = prevDet;
-                }
+            if (cached == flightDetailCache.end() && !net.IsInflight("detail:" + icao)) {
+                lastRouteLookupMs = now;
+                RequestFlightDetail(icao, false, NetWorker::PRIO_PREFETCH);
                 break;
             }
         }
@@ -971,22 +981,23 @@ void AircraftManager::DrawDepartureBoardView(LGFX_Sprite& buf, const ThemePalett
         );
 
         // 1. Carrier Badge + Name
-        VectorArt::DrawCarrierLogoBadge(buf, cCarrier, ry + 8, 42, 32, airline, theme);
-        buf.setTextFont(2);
+        mediaCache.DrawCarrierBadge(buf, cCarrier, ry + 8, 64, 32, airline, theme);
+        UseFont(buf, 2);
         buf.setTextColor(isSel && theme.isLight ? lgfx::color888(255, 255, 255) : theme.textPrimary);
-        buf.drawString(TruncateToWidth(buf, airline.name, 96), cCarrier + 48, ry + 9);
+        buf.drawString(TruncateToWidth(buf, airline.name, 80), cCarrier + 70, ry + 9);
 
-        buf.setTextFont(1);
+        UseFont(buf, 1);
         buf.setTextColor(theme.textMuted);
         String regOrHex = !tracked.state.registration.isEmpty() ? tracked.state.registration : item.icao;
         regOrHex.toUpperCase();
-        buf.drawString(regOrHex, cCarrier + 48, ry + 27);
+        if (tracked.state.registration.isEmpty()) regOrHex = "ICAO " + regOrHex;
+        buf.drawString(regOrHex, cCarrier + 70, ry + 27);
 
         // 2. Flight / Callsign Flap
         String callStr = !tracked.state.callsign.isEmpty() ? tracked.state.callsign : regOrHex;
         buf.fillRoundRect(cFlight, ry + 8, 92, 32, 3, theme.bgSecondary);
         buf.drawRoundRect(cFlight, ry + 8, 92, 32, 3, theme.borderSecondary);
-        buf.setTextFont(2);
+        UseFont(buf, 2);
         buf.setTextColor(item.isPinned ? theme.textPinned : theme.textAccent);
         buf.drawString(callStr, cFlight + 8, ry + 16);
 
@@ -997,37 +1008,41 @@ void AircraftManager::DrawDepartureBoardView(LGFX_Sprite& buf, const ThemePalett
         if (routeIt != flightDetailCache.end() && routeIt->second.loaded) {
             String dep = !routeIt->second.departureAirport.isEmpty() ? routeIt->second.departureAirport : "---";
             String arr = !routeIt->second.arrivalAirport.isEmpty() ? routeIt->second.arrivalAirport : "---";
-            buf.setTextFont(2);
+            UseFont(buf, 2);
             buf.setTextColor(theme.textPrimary);
-            buf.drawString(dep + "  >  " + arr, cRoute + 10, ry + 8);
+            buf.drawString(dep + "  >  " + arr, cRoute + 10, ry + 7);
 
-            buf.setTextFont(1);
+            UseFont(buf, 1);
             buf.setTextColor(theme.textMuted);
             String cityPair = (!routeIt->second.departureCity.isEmpty() ? routeIt->second.departureCity : dep)
                             + " to "
                             + (!routeIt->second.arrivalCity.isEmpty() ? routeIt->second.arrivalCity : arr);
-            buf.drawString(TruncateToWidth(buf, cityPair, 136), cRoute + 10, ry + 26);
-        } else {
-            buf.setTextFont(2);
+            buf.drawString(TruncateToWidth(buf, cityPair, 134), cRoute + 10, ry + 25);
+        } else if (routeIt == flightDetailCache.end()) {
+            UseFont(buf, 1);
             buf.setTextColor(theme.textMuted);
-            buf.drawString("---  >  ---", cRoute + 10, ry + 16);
+            buf.drawString("Looking up route...", cRoute + 10, ry + 18);
+        } else {
+            UseFont(buf, 1);
+            buf.setTextColor(theme.textMuted);
+            buf.drawString("Local / Unscheduled", cRoute + 10, ry + 18);
         }
 
         // 4. Aircraft Type
-        buf.setTextFont(2);
+        UseFont(buf, 2);
         buf.setTextColor(isSel && theme.isLight ? lgfx::color888(255, 255, 255) : theme.textSecondary);
-        String modelShort = !tracked.state.typeCode.isEmpty() ? tracked.state.typeCode : "AIR";
+        String modelShort = !tracked.state.typeCode.isEmpty() ? tracked.state.typeCode : "----";
         buf.drawString(modelShort, cType, ry + 8);
-        buf.setTextFont(1);
+        UseFont(buf, 1);
         buf.setTextColor(typeInfo.isRareCatch ? theme.textWarning : theme.textMuted);
         buf.drawString(TruncateToWidth(buf, typeInfo.fullName, 104), cType, ry + 27);
 
         // 5. Altitude
         float alt = ConvertAltitude(tracked.state.baroAltitude);
-        buf.setTextFont(2);
+        UseFont(buf, 2);
         buf.setTextColor(isSel && theme.isLight ? lgfx::color888(255, 255, 255) : theme.textPrimary);
         buf.drawString(String(alt, 0) + " " + AltUnit(), cAlt, ry + 9);
-        buf.setTextFont(1);
+        UseFont(buf, 1);
         if (std::abs(tracked.state.verticalRate) > 0.6f) {
             buf.setTextColor(tracked.state.verticalRate > 0 ? theme.textAccent : theme.textWarning);
             buf.drawString(tracked.state.verticalRate > 0 ? "^ CLIMB" : "v DESC", cAlt, ry + 27);
@@ -1038,25 +1053,25 @@ void AircraftManager::DrawDepartureBoardView(LGFX_Sprite& buf, const ThemePalett
 
         // 6. Ground Speed
         float spd = ConvertSpeed(tracked.state.velocity);
-        buf.setTextFont(2);
+        UseFont(buf, 2);
         buf.setTextColor(isSel && theme.isLight ? lgfx::color888(255, 255, 255) : theme.textPrimary);
         buf.drawString(String(spd, 0) + " " + SpeedUnit(), cSpeed, ry + 9);
-        buf.setTextFont(1);
+        UseFont(buf, 1);
         buf.setTextColor(theme.textMuted);
         buf.drawString(String(tracked.state.trueTrack, 0) + " deg", cSpeed, ry + 27);
 
         // 7. Distance & Compass Bearing
-        buf.setTextFont(2);
+        UseFont(buf, 2);
         buf.setTextColor(theme.textAccent);
         float dVal = ConvertDistance(item.distKm);
         buf.drawString(String(dVal, dVal < 10.0f ? 1 : 0) + " " + DistUnit(), cDist, ry + 9);
-        buf.setTextFont(1);
+        UseFont(buf, 1);
         buf.setTextColor(theme.textSecondary);
-        buf.drawString(String(AviationCatalog::BearingToCardinal(item.bearingDeg)) + (item.isPinned ? " ★PIN" : ""), cDist, ry + 27);
+        buf.drawString(String(AviationCatalog::BearingToCardinal(item.bearingDeg)) + (item.isPinned ? " PIN" : ""), cDist, ry + 27);
     }
 
     // Bottom ticker inside board
-    buf.setTextFont(1);
+    UseFont(buf, 1);
     buf.setTextColor(theme.textMuted);
     buf.drawString("TAP ANY FLIGHT ROW TO OPEN FULL AVIOFRAME POSTER", bx + 14, by + bh - 14);
     String rightStat = "SESSION: " + String(stats.totalUniqueSeen) + " SPOTTED";
@@ -1093,8 +1108,7 @@ void AircraftManager::DrawPortraitPosterView(LGFX_Sprite& buf, const ThemePalett
         // Fallback when zero flights are in range
         DrawIdleWelcomePanel(buf, theme);
         // Draw left-side big silhouette art
-        AircraftTypeInfo demoType = AviationCatalog::LookupAircraftType("A35K");
-        VectorArt::DrawAircraftSilhouette(buf, 16, 16, 424, 412, SIL_WIDEBODY_TWIN, theme, "A35K", giftTitle + " — " + giftSubtitle, "SCANNING SKIES", true);
+        VectorArt::DrawAircraftSilhouette(buf, 16, 16, 424, 412, SIL_WIDEBODY_TWIN, theme, "A35K", giftTitle + " | " + giftSubtitle, "SCANNING SKIES", true);
         return;
     }
 
@@ -1116,18 +1130,18 @@ void AircraftManager::DrawPortraitPosterView(LGFX_Sprite& buf, const ThemePalett
     mediaCache.DrawCarrierBadge(buf, lx + 10, by + 20, 96, 48, airline, theme);
 
     int hTextX = lx + 118;
-    buf.setTextFont(4);
+    UseFont(buf, 4);
     buf.setTextColor(theme.isLight ? lgfx::color888(255, 255, 255) : theme.textPrimary);
     String mainCall = !tracked.state.callsign.isEmpty() ? tracked.state.callsign : selectedIcao;
     buf.drawString(mainCall, hTextX, by + 18);
 
     if (!airline.formattedFlight.isEmpty() && airline.formattedFlight != mainCall) {
-        buf.setTextFont(2);
+        UseFont(buf, 2);
         buf.setTextColor(theme.textAccent);
         buf.drawRightString(airline.formattedFlight, lx + lw - 12, by + 22);
     }
 
-    buf.setTextFont(2);
+    UseFont(buf, 2);
     buf.setTextColor(theme.isLight ? lgfx::color888(215, 225, 240) : theme.textSecondary);
     buf.drawString(TruncateToWidth(buf, airline.name, lw - 130), hTextX, by + 48);
 
@@ -1143,12 +1157,12 @@ void AircraftManager::DrawPortraitPosterView(LGFX_Sprite& buf, const ThemePalett
     // Pinned or Rare Catch badge ribbon on top-left of Hero box
     if (isPinned) {
         buf.fillRoundRect(lx + 10, heroY + 10, 118, 22, 4, theme.textPinned);
-        buf.setTextFont(2);
+        UseFont(buf, 2);
         buf.setTextColor(lgfx::color888(15, 15, 20));
         buf.drawCentreString("PINNED FLIGHT", lx + 69, heroY + 13);
     } else if (typeInfo.isRareCatch && !typeInfo.rareBadge.isEmpty()) {
         buf.fillRoundRect(lx + 10, heroY + 10, 118, 22, 4, theme.textWarning);
-        buf.setTextFont(2);
+        UseFont(buf, 2);
         buf.setTextColor(lgfx::color888(15, 15, 20));
         buf.drawCentreString(typeInfo.rareBadge, lx + 69, heroY + 13);
     }
@@ -1162,13 +1176,11 @@ void AircraftManager::DrawPortraitPosterView(LGFX_Sprite& buf, const ThemePalett
     String depCode = !selectedDetail.departureAirport.isEmpty() ? selectedDetail.departureAirport : "---";
     String arrCode = !selectedDetail.arrivalAirport.isEmpty() ? selectedDetail.arrivalAirport : "---";
 
-    buf.setTextFont(6); // Large 48px numeric/alpha font or Font 4 scaled
-    buf.setTextFont(4);
-    buf.setTextSize(2);
+    UseFont(buf, 6);
+    buf.setTextSize(1);
     buf.setTextColor(theme.textPrimary);
     buf.drawString(depCode, lx + 14, routeY + 10);
     buf.drawRightString(arrCode, lx + lw - 14, routeY + 10);
-    buf.setTextSize(1);
 
     auto [curLat, curLon] = tracked.GetDisplayPosition();
     float totalKm = 0.0f, remKm = 0.0f;
@@ -1180,19 +1192,19 @@ void AircraftManager::DrawPortraitPosterView(LGFX_Sprite& buf, const ThemePalett
 
     VectorArt::DrawRouteProgressBar(buf, lx + 118, routeY + 24, lw - 236, progressPct, theme);
 
-    buf.setTextFont(1);
+    UseFont(buf, 1);
     buf.setTextColor(theme.textAccent);
     if (progressPct >= 0.0f) {
         String pctStr = String(progressPct, 0) + "% COMPLETE";
         if (remKm > 0.0f) {
-            pctStr += "  ·  " + String(ConvertDistance(remKm), 0) + " " + DistUnit() + " REMAINING";
+            pctStr += "  |  " + String(ConvertDistance(remKm), 0) + " " + DistUnit() + " REMAINING";
         }
         buf.drawCentreString(pctStr, lx + lw / 2, routeY + 44);
     } else {
         buf.drawCentreString(selectedDetail.loaded ? "EN ROUTE" : "LIVE ADS-B TELEMETRY", lx + lw / 2, routeY + 44);
     }
 
-    buf.setTextFont(2);
+    UseFont(buf, 2);
     buf.setTextColor(theme.textSecondary);
     String depName = !selectedDetail.departureAirportFull.isEmpty() ? selectedDetail.departureAirportFull : "Origin Airport";
     String arrName = !selectedDetail.arrivalAirportFull.isEmpty() ? selectedDetail.arrivalAirportFull : "Destination Airport";
@@ -1206,7 +1218,7 @@ void AircraftManager::DrawPortraitPosterView(LGFX_Sprite& buf, const ThemePalett
     // Aircraft Model & Registration Banner
     buf.fillRoundRect(rx, by + 12, rw, 54, 6, theme.bgSecondary);
     buf.drawRoundRect(rx, by + 12, rw, 54, 6, theme.borderSecondary);
-    buf.setTextFont(1);
+    UseFont(buf, 1);
     buf.setTextColor(theme.textMuted);
     buf.drawString("AIRCRAFT MODEL", rx + 10, by + 18);
     String regBadge = !tracked.state.registration.isEmpty() ? ("REG " + tracked.state.registration) : ("HEX " + selectedIcao);
@@ -1214,7 +1226,7 @@ void AircraftManager::DrawPortraitPosterView(LGFX_Sprite& buf, const ThemePalett
     buf.setTextColor(theme.textAccent);
     buf.drawRightString(regBadge, rx + rw - 10, by + 18);
 
-    buf.setTextFont(2);
+    UseFont(buf, 2);
     buf.setTextColor(theme.textPrimary);
     buf.drawString(TruncateToWidth(buf, typeInfo.fullName, rw - 20), rx + 10, by + 34);
 
@@ -1226,13 +1238,13 @@ void AircraftManager::DrawPortraitPosterView(LGFX_Sprite& buf, const ThemePalett
     auto drawPosterStat = [&](int cx, int cy, const char* label, const String& bigVal, const String& unitOrSub) {
         buf.fillRoundRect(cx, cy, tCellW, tCellH, 5, theme.bgSecondary);
         buf.drawRoundRect(cx, cy, tCellW, tCellH, 5, theme.borderSecondary);
-        buf.setTextFont(1);
+        UseFont(buf, 1);
         buf.setTextColor(theme.textMuted);
         buf.drawString(label, cx + 8, cy + 6);
-        buf.setTextFont(4);
+        UseFont(buf, 4);
         buf.setTextColor(theme.textPrimary);
         buf.drawString(TruncateToWidth(buf, bigVal, tCellW - 14), cx + 8, cy + 20);
-        buf.setTextFont(1);
+        UseFont(buf, 1);
         buf.setTextColor(theme.textAccent);
         buf.drawRightString(unitOrSub, cx + tCellW - 8, cy + 6);
     };
@@ -1248,7 +1260,7 @@ void AircraftManager::DrawPortraitPosterView(LGFX_Sprite& buf, const ThemePalett
     ty += tCellH + 8;
 
     drawPosterStat(rx,              ty, "VERTICAL RATE", String(vrMin > 0 ? "+" : "") + String(vrMin, 0), AltUnit() + "/m");
-    drawPosterStat(rx + tCellW + 8, ty, "TRACK HEADING", String(tracked.state.trueTrack, 0) + "°", AviationCatalog::BearingToCardinal(tracked.state.trueTrack));
+    drawPosterStat(rx + tCellW + 8, ty, "TRACK HEADING", String(tracked.state.trueTrack, 0) + " deg", AviationCatalog::BearingToCardinal(tracked.state.trueTrack));
     ty += tCellH + 8;
 
     // Mini Compass Radar Widget + Distance Card
@@ -1260,20 +1272,20 @@ void AircraftManager::DrawPortraitPosterView(LGFX_Sprite& buf, const ThemePalett
     VectorArt::DrawMiniCompassRadar(buf, rx + 58, ty + locH / 2, 44, brgDeg, distKm, maxRangeKm, tracked.state.trueTrack, theme);
 
     int locTextX = rx + 114;
-    buf.setTextFont(1);
+    UseFont(buf, 1);
     buf.setTextColor(theme.textMuted);
     buf.drawString("DISTANCE FROM HOME", locTextX, ty + 12);
 
-    buf.setTextFont(4);
+    UseFont(buf, 4);
     buf.setTextColor(theme.textAccent);
     float dConv = ConvertDistance(distKm);
     buf.drawString(String(dConv, dConv < 10.0f ? 1 : 0) + " " + DistUnit(), locTextX, ty + 28);
 
-    buf.setTextFont(2);
+    UseFont(buf, 2);
     buf.setTextColor(theme.textPrimary);
     buf.drawString("Bearing: " + String(brgDeg, 0) + " deg (" + AviationCatalog::BearingToCardinal(brgDeg) + ")", locTextX, ty + 58);
 
-    buf.setTextFont(1);
+    UseFont(buf, 1);
     buf.setTextColor(theme.textMuted);
     String sqkInfo = "ICAO: " + selectedIcao + (!tracked.state.squawk.isEmpty() ? ("  |  SQK: " + tracked.state.squawk) : "");
     buf.drawString(sqkInfo, locTextX, ty + 84);
@@ -1288,11 +1300,11 @@ void AircraftManager::DrawPortraitPosterView(LGFX_Sprite& buf, const ThemePalett
     buf.fillRoundRect(rx + btnW + 8, ty, btnW, btnH, 5, theme.buttonBg);
     buf.drawRoundRect(rx + btnW + 8, ty, btnW, btnH, 5, theme.buttonBorder);
 
-    buf.setTextFont(2);
+    UseFont(buf, 2);
     buf.setTextColor(theme.buttonText);
     buf.drawCentreString("< PREV FLIGHT", rx + btnW / 2, ty + 11);
     buf.drawCentreString("NEXT FLIGHT >", rx + btnW + 8 + btnW / 2, ty + 11);
-    buf.setTextFont(1);
+    UseFont(buf, 1);
 }
 
 void AircraftManager::DrawStatsModal(LGFX_Sprite& buf, const ThemePalette& theme) const
@@ -1305,11 +1317,11 @@ void AircraftManager::DrawStatsModal(LGFX_Sprite& buf, const ThemePalette& theme
     buf.drawRoundRect(mx, my, mw, mh, 10, theme.borderPrimary);
 
     buf.fillRoundRect(mx + 2, my + 2, mw - 4, 46, 8, theme.bgHeader);
-    buf.setTextFont(4);
+    UseFont(buf, 4);
     buf.setTextColor(theme.isLight ? lgfx::color888(255, 255, 255) : theme.textPrimary);
     buf.drawString("SKY SPOTTER LOG & RECORDS", mx + 18, my + 12);
 
-    buf.setTextFont(2);
+    UseFont(buf, 2);
     buf.setTextColor(theme.textAccent);
     buf.drawRightString("TAP TO CLOSE", mx + mw - 18, my + 16);
 
@@ -1322,13 +1334,13 @@ void AircraftManager::DrawStatsModal(LGFX_Sprite& buf, const ThemePalette& theme
         int cx = mx + 18 + idx * (cardW + 8);
         buf.fillRoundRect(cx, cardY, cardW, cardH, 6, theme.bgSecondary);
         buf.drawRoundRect(cx, cardY, cardW, cardH, 6, theme.borderSecondary);
-        buf.setTextFont(1);
+        UseFont(buf, 1);
         buf.setTextColor(theme.textMuted);
         buf.drawString(title, cx + 8, cardY + 8);
-        buf.setTextFont(4);
+        UseFont(buf, 4);
         buf.setTextColor(theme.textAccent);
         buf.drawString(TruncateToWidth(buf, bigVal, cardW - 14), cx + 8, cardY + 26);
-        buf.setTextFont(2);
+        UseFont(buf, 2);
         buf.setTextColor(theme.textPrimary);
         buf.drawString(TruncateToWidth(buf, sub, cardW - 14), cx + 8, cardY + 58);
     };
@@ -1352,7 +1364,7 @@ void AircraftManager::DrawStatsModal(LGFX_Sprite& buf, const ThemePalette& theme
 
     // Rare Catches & Notable Aircraft section
     int ry = cardY + cardH + 16;
-    buf.setTextFont(2);
+    UseFont(buf, 2);
     buf.setTextColor(theme.textPrimary);
     buf.drawString("NOTABLE & RARE CATCHES (SUPERJUMBOS, HELICOPTERS, MILITARY)", mx + 18, ry);
     ry += 24;
@@ -1360,10 +1372,10 @@ void AircraftManager::DrawStatsModal(LGFX_Sprite& buf, const ThemePalette& theme
     if (stats.rareCatches.empty()) {
         buf.fillRoundRect(mx + 18, ry, mw - 36, 130, 6, theme.bgSecondary);
         buf.drawRoundRect(mx + 18, ry, mw - 36, 130, 6, theme.borderSecondary);
-        buf.setTextFont(2);
+        UseFont(buf, 2);
         buf.setTextColor(theme.textMuted);
         buf.drawCentreString("No rare catches logged yet this session.", mx + mw / 2, ry + 42);
-        buf.setTextFont(1);
+        UseFont(buf, 1);
         buf.drawCentreString("Keep watching for Airbus A380s, Boeing 747s, Helicopters, and Military flights!", mx + mw / 2, ry + 70);
     } else {
         for (size_t i = 0; i < min((size_t)4, stats.rareCatches.size()); ++i) {
@@ -1373,11 +1385,11 @@ void AircraftManager::DrawStatsModal(LGFX_Sprite& buf, const ThemePalette& theme
             buf.drawRoundRect(mx + 18, itemY, mw - 36, 32, 4, theme.borderSecondary);
 
             buf.fillRoundRect(mx + 24, itemY + 6, 92, 20, 3, theme.textWarning);
-            buf.setTextFont(1);
+            UseFont(buf, 1);
             buf.setTextColor(lgfx::color888(15, 15, 20));
             buf.drawCentreString(rc.badge, mx + 70, itemY + 12);
 
-            buf.setTextFont(2);
+            UseFont(buf, 2);
             buf.setTextColor(theme.textPrimary);
             buf.drawString(rc.callsign, mx + 126, itemY + 8);
 
@@ -1389,7 +1401,7 @@ void AircraftManager::DrawStatsModal(LGFX_Sprite& buf, const ThemePalette& theme
         }
     }
 
-    buf.setTextFont(1);
+    UseFont(buf, 1);
 }
 
 String AircraftManager::HitTestAircraft(int tapX, int tapY) const
@@ -1429,36 +1441,28 @@ String AircraftManager::HitTestAircraft(int tapX, int tapY) const
     return nearestIcao;
 }
 
-bool AircraftManager::FetchFlightDetailAirlabs(const String& icao)
+bool AircraftManager::FetchFlightDetailAirlabs(const String& icao, const String& callsign, FlightDetail& detail)
 {
-    const String airlabsKey = configServer.GetStoredString("airlabs-key");
-    if (airlabsKey.isEmpty()) {
-        return false;
-    }
-
+    // Runs on the NetWorker task. Must not touch UI-thread state.
     if (!airlabsManager.updateSingle(icao)) {
         Serial.println("[DETAIL] Airlabs hex lookup failed, trying callsign...");
     }
 
-    const auto& airlabsAircraft = airlabsManager.getAircraft();
     String lookupIcao = icao;
     lookupIcao.toLowerCase();
 
+    const auto& airlabsAircraft = airlabsManager.getAircraft();
     auto it = airlabsAircraft.find(lookupIcao);
     if (it != airlabsAircraft.end()) {
         const AirLabsAircraft& ac = it->second;
-        selectedDetail.departureAirport = ac.dep_iata;
-        selectedDetail.arrivalAirport = ac.arr_iata;
-        ResolveAirportNames(selectedDetail);
-        selectedDetail.departureTime = ac.dep_time;
-        selectedDetail.arrivalTime = ac.arr_time;
+        detail.departureAirport = ac.dep_iata;
+        detail.arrivalAirport = ac.arr_iata;
+        ResolveAirportNames(detail);
+        detail.departureTime = ac.dep_time;
+        detail.arrivalTime = ac.arr_time;
         return true;
     }
 
-    auto trackedIt = trackedAircraft.find(icao);
-    if (trackedIt == trackedAircraft.end()) return false;
-
-    const String& callsign = trackedIt->second.state.callsign;
     if (callsign.isEmpty()) return false;
 
     AirLabsAircraft flightData;
@@ -1466,11 +1470,11 @@ bool AircraftManager::FetchFlightDetailAirlabs(const String& icao)
         return false;
     }
 
-    selectedDetail.departureAirport = flightData.dep_iata;
-    selectedDetail.arrivalAirport = flightData.arr_iata;
-    ResolveAirportNames(selectedDetail);
-    selectedDetail.departureTime = flightData.dep_time;
-    selectedDetail.arrivalTime = flightData.arr_time;
+    detail.departureAirport = flightData.dep_iata;
+    detail.arrivalAirport = flightData.arr_iata;
+    ResolveAirportNames(detail);
+    detail.departureTime = flightData.dep_time;
+    detail.arrivalTime = flightData.arr_time;
     return true;
 }
 
@@ -1487,12 +1491,10 @@ void AircraftManager::ResolveAirportNames(FlightDetail& detail) const
     }
 }
 
-bool AircraftManager::FetchFlightDetailAdsbdb(const String& callsign, const String& icao, FlightDetail& detail)
+bool AircraftManager::FetchFlightDetailAdsbdb(const String& callsign, const String& icao, bool needAirframe, FlightDetail& detail)
 {
-    // Also enrich aircraft registration / type from adsbdb if missing (e.g. OpenSky provider)
-    auto trackedIt = trackedAircraft.find(icao);
-    bool needAirframe = (trackedIt != trackedAircraft.end() &&
-                         (trackedIt->second.state.typeCode.isEmpty() || trackedIt->second.state.registration.isEmpty()));
+    // Runs on the NetWorker task. Airframe metadata is returned inside `detail`
+    // and applied to the tracked aircraft later on the UI thread.
 
     String cs = callsign;
     cs.trim();
@@ -1522,15 +1524,11 @@ bool AircraftManager::FetchFlightDetailAdsbdb(const String& callsign, const Stri
 
     // Extract airframe metadata if present
     JsonObject acObj = doc["response"]["aircraft"];
-    if (!acObj.isNull() && trackedIt != trackedAircraft.end()) {
-        String reg = acObj["registration"] | "";
-        String icaoType = acObj["icao_type"] | "";
-        String typeDesc = acObj["type"] | "";
-        String owner = acObj["registered_owner"] | "";
-        if (trackedIt->second.state.registration.isEmpty() && !reg.isEmpty()) trackedIt->second.state.registration = reg;
-        if (trackedIt->second.state.typeCode.isEmpty() && !icaoType.isEmpty()) trackedIt->second.state.typeCode = icaoType;
-        if (trackedIt->second.state.typeDescription.isEmpty() && !typeDesc.isEmpty()) trackedIt->second.state.typeDescription = typeDesc;
-        if (trackedIt->second.state.operatorName.isEmpty() && !owner.isEmpty()) trackedIt->second.state.operatorName = owner;
+    if (!acObj.isNull()) {
+        detail.afReg = acObj["registration"] | "";
+        detail.afType = acObj["icao_type"] | "";
+        detail.afTypeDesc = acObj["type"] | "";
+        detail.afOwner = acObj["registered_owner"] | "";
     }
 
     JsonObject route = doc["response"]["flightroute"];
@@ -1623,6 +1621,37 @@ bool AircraftManager::FetchFlightDetailHexdb(const String& callsign, FlightDetai
     return true;
 }
 
+void AircraftManager::RequestFlightDetail(const String& icao, bool allowAirlabs, int prio)
+{
+    auto trackedIt = trackedAircraft.find(icao);
+    if (trackedIt == trackedAircraft.end()) return;
+
+    String callsign = trackedIt->second.state.callsign;
+    callsign.trim();
+    const bool needAirframe = trackedIt->second.state.typeCode.isEmpty() || trackedIt->second.state.registration.isEmpty();
+    const String airlabsKey = allowAirlabs ? configServer.GetStoredString("airlabs-key") : String("");
+
+    net.Submit("detail:" + icao, [this, icao, callsign, needAirframe, airlabsKey]() {
+        FlightDetail d;
+        if (!callsign.isEmpty() || needAirframe) {
+            if (!FetchFlightDetailAdsbdb(callsign, icao, needAirframe, d) && !callsign.isEmpty()) {
+                FetchFlightDetailHexdb(callsign, d);
+            }
+        }
+        if (!d.loaded && !airlabsKey.isEmpty()) {
+            if (FetchFlightDetailAirlabs(icao, callsign, d)) {
+                d.loaded = !d.departureAirport.isEmpty() || !d.arrivalAirport.isEmpty();
+            }
+        }
+        d.attempted = true;
+        d.fetchedMs = millis();
+
+        xSemaphoreTake(resultMutex, portMAX_DELAY);
+        detailResults[icao] = d;
+        xSemaphoreGive(resultMutex);
+    }, prio);
+}
+
 void AircraftManager::PopulateFlightDetail(const String& icao, bool allowAirlabs)
 {
     auto cached = flightDetailCache.find(icao);
@@ -1631,28 +1660,75 @@ void AircraftManager::PopulateFlightDetail(const String& icao, bool allowAirlabs
         return;
     }
 
+    // Show the card immediately; route fills in when the background lookup lands
     selectedDetail = FlightDetail{};
-    auto trackedIt = trackedAircraft.find(icao);
-    String callsign = (trackedIt != trackedAircraft.end()) ? trackedIt->second.state.callsign : "";
-    callsign.trim();
+    lastRouteLookupMs = millis();
+    RequestFlightDetail(icao, allowAirlabs, NetWorker::PRIO_URGENT);
+}
 
-    if (!callsign.isEmpty() || trackedIt != trackedAircraft.end()) {
-        if (!FetchFlightDetailAdsbdb(callsign, icao, selectedDetail) && !callsign.isEmpty()) {
-            FetchFlightDetailHexdb(callsign, selectedDetail);
+void AircraftManager::ApplyNetworkResults()
+{
+    if (!resultMutex) return;
+
+    std::map<String, FlightDetail> details;
+    std::vector<Aircraft> area;
+    bool haveArea = false, areaSucceeded = false;
+    Aircraft pinned, single;
+    bool havePinned = false, haveSingle = false;
+    String singleIcao;
+
+    xSemaphoreTake(resultMutex, portMAX_DELAY);
+    details.swap(detailResults);
+    if (areaReady) { area.swap(areaResult); haveArea = true; areaSucceeded = areaOk; areaReady = false; }
+    if (pinnedReady) { pinned = pinnedResult; havePinned = true; pinnedReady = false; }
+    if (singleReady) { single = singleResult; singleIcao = singleResultIcao; haveSingle = true; singleReady = false; }
+    xSemaphoreGive(resultMutex);
+
+    unsigned long now = millis();
+
+    if (haveArea && areaSucceeded) {
+        for (auto& ac : area) {
+            auto it = trackedAircraft.find(ac.icao24);
+            if (it == trackedAircraft.end())
+                trackedAircraft.emplace(ac.icao24, TrackedAircraft{ac, now});
+            else
+                it->second.Update(ac, now);
+            UpdateSpotterStats(ac);
         }
-        lastRouteLookupMs = millis();
+
+        constexpr unsigned long AIRCRAFT_EXPIRY_MS = 180000;
+        for (auto it = trackedAircraft.begin(); it != trackedAircraft.end(); ) {
+            if (now - it->second.lastSeen > AIRCRAFT_EXPIRY_MS) {
+                flightDetailCache.erase(it->first);
+                it = trackedAircraft.erase(it);
+            } else {
+                ++it;
+            }
+        }
+        dataVersion++;
+        Serial.printf("[RADAR] %d aircraft tracked\n", (int)trackedAircraft.size());
     }
 
-    if (!selectedDetail.loaded && allowAirlabs) {
-        const String airlabsKey = configServer.GetStoredString("airlabs-key");
-        if (!airlabsKey.isEmpty() && FetchFlightDetailAirlabs(icao)) {
-            selectedDetail.loaded = !selectedDetail.departureAirport.isEmpty() ||
-                                    !selectedDetail.arrivalAirport.isEmpty();
-        }
+    if (havePinned) ApplyPinnedAircraft(pinned);
+
+    if (haveSingle) {
+        auto it = trackedAircraft.find(singleIcao);
+        if (it != trackedAircraft.end()) it->second.Update(single, now);
     }
 
-    selectedDetail.attempted = true;
-    flightDetailCache[icao] = selectedDetail;
+    for (auto& [icao, d] : details) {
+        auto tIt = trackedAircraft.find(icao);
+        if (tIt == trackedAircraft.end()) continue; // aircraft left while we were looking it up
+        auto& st = tIt->second.state;
+        if (st.registration.isEmpty() && !d.afReg.isEmpty()) st.registration = d.afReg;
+        if (st.typeCode.isEmpty() && !d.afType.isEmpty()) st.typeCode = d.afType;
+        if (st.typeDescription.isEmpty() && !d.afTypeDesc.isEmpty()) st.typeDescription = d.afTypeDesc;
+        if (st.operatorName.isEmpty() && !d.afOwner.isEmpty()) st.operatorName = d.afOwner;
+
+        flightDetailCache[icao] = d;
+        if (icao == selectedIcao) selectedDetail = d;
+        dataVersion++;
+    }
 }
 
 void AircraftManager::SelectFlight(const String& icao24)
@@ -1675,7 +1751,7 @@ void AircraftManager::SelectFlight(const String& icao24)
     }
 }
 
-bool AircraftManager::FetchSingleAircraftOpenSky(const String& icao)
+bool AircraftManager::FetchSingleAircraftOpenSky(const String& icao, Aircraft& out)
 {
     const String token = authHandler.GetValidToken(
         configServer.GetStoredString("opensky-id"),
@@ -1701,15 +1777,8 @@ bool AircraftManager::FetchSingleAircraftOpenSky(const String& icao)
     JsonArray states = doc["states"];
     if (states.isNull() || states.size() == 0) return false;
 
-    Aircraft updated = JsonParser::Parse<Aircraft>(states[0]);
-
-    auto it = trackedAircraft.find(icao);
-    if (it != trackedAircraft.end()) {
-        it->second.Update(updated, millis());
-        return true;
-    }
-
-    return false;
+    out = JsonParser::Parse<Aircraft>(states[0]);
+    return true;
 }
 
 bool AircraftManager::ParseAdsbLolAircraftObj(JsonVariant v, Aircraft& ac) const
@@ -1788,8 +1857,9 @@ bool AircraftManager::FetchAreaAdsbLol(std::vector<Aircraft>& out)
     return true;
 }
 
-bool AircraftManager::FetchPinnedFlightAdsbLol()
+bool AircraftManager::FetchPinnedFlightAdsbLol(const String& pinnedQuery, Aircraft& pinnedAc)
 {
+    // Runs on the NetWorker task
     if (pinnedQuery.isEmpty()) return false;
 
     auto tryEndpoint = [&](const String& endpointUrl, Aircraft& outAc) -> bool {
@@ -1802,7 +1872,7 @@ bool AircraftManager::FetchPinnedFlightAdsbLol()
         return ParseAdsbLolAircraftObj(arr[0], outAc);
     };
 
-    Aircraft pinnedAc{};
+    pinnedAc = Aircraft{};
     bool found = false;
 
     // 1. Try direct callsign lookup
@@ -1841,6 +1911,13 @@ bool AircraftManager::FetchPinnedFlightAdsbLol()
         return false;
     }
 
+    Serial.printf("[PIN] Tracking pinned flight %s (%s) at %.3f, %.3f\n",
+        pinnedAc.callsign.c_str(), pinnedAc.icao24.c_str(), pinnedAc.latitude, pinnedAc.longitude);
+    return true;
+}
+
+void AircraftManager::ApplyPinnedAircraft(const Aircraft& pinnedAc)
+{
     unsigned long now = millis();
     auto it = trackedAircraft.find(pinnedAc.icao24);
     if (it == trackedAircraft.end()) {
@@ -1855,10 +1932,6 @@ bool AircraftManager::FetchPinnedFlightAdsbLol()
     if (newlyPinned || selectedIcao.isEmpty()) {
         SelectFlight(pinnedIcao);
     }
-
-    Serial.printf("[PIN] Tracking pinned flight %s (%s) at %.3f, %.3f\n",
-        pinnedAc.callsign.c_str(), pinnedAc.icao24.c_str(), pinnedAc.latitude, pinnedAc.longitude);
-    return true;
 }
 
 void AircraftManager::UpdateSpotterStats(const Aircraft& ac)
@@ -1968,45 +2041,40 @@ void AircraftManager::Update()
         lastViewCycleMs = now;
         int next = (static_cast<int>(viewMode) + 1) % VIEW_COUNT;
         viewMode = static_cast<DisplayViewMode>(next);
+        dataVersion++;
     }
 
-    // Pinned flight polling (every 15s)
+    // Pick up anything the background worker has finished (cheap; never blocks on network)
+    ApplyNetworkResults();
+
+    // Pinned flight polling (every 15s) -- runs on the worker
     if (!pinnedQuery.isEmpty() && (lastPinnedFetchMs == 0 || now - lastPinnedFetchMs >= 15000)) {
         lastPinnedFetchMs = now;
-        FetchPinnedFlightAdsbLol();
+        const String query = pinnedQuery;
+        net.Submit("pinned", [this, query]() {
+            Aircraft ac{};
+            if (FetchPinnedFlightAdsbLol(query, ac)) {
+                xSemaphoreTake(resultMutex, portMAX_DELAY);
+                pinnedResult = ac;
+                pinnedReady = true;
+                xSemaphoreGive(resultMutex);
+            }
+        }, NetWorker::PRIO_VISIBLE);
     }
 
-    if (now - lastFetch >= fetchInterval) {
+    // Area poll -- runs on the worker; results merged by ApplyNetworkResults()
+    if (now - lastFetch >= fetchInterval && !net.IsInflight("area")) {
         lastFetch = now;
-
-        std::vector<Aircraft> aircraft;
-        bool ok = (trackingProvider == "opensky")
-            ? FetchAreaOpenSky(aircraft)
-            : FetchAreaAdsbLol(aircraft);
-
-        if (ok) {
-            now = millis();
-            for (auto& ac : aircraft) {
-                auto it = trackedAircraft.find(ac.icao24);
-                if (it == trackedAircraft.end())
-                    trackedAircraft.emplace(ac.icao24, TrackedAircraft{ac, now});
-                else
-                    it->second.Update(ac, now);
-
-                UpdateSpotterStats(ac);
-            }
-
-            constexpr unsigned long AIRCRAFT_EXPIRY_MS = 180000;
-            for (auto it = trackedAircraft.begin(); it != trackedAircraft.end(); ) {
-                if (now - it->second.lastSeen > AIRCRAFT_EXPIRY_MS) {
-                    flightDetailCache.erase(it->first);
-                    it = trackedAircraft.erase(it);
-                } else {
-                    ++it;
-                }
-            }
-            Serial.printf("[RADAR] %d aircraft tracked\n", trackedAircraft.size());
-        }
+        const bool useOpenSky = (trackingProvider == "opensky");
+        net.Submit("area", [this, useOpenSky]() {
+            std::vector<Aircraft> aircraft;
+            bool ok = useOpenSky ? FetchAreaOpenSky(aircraft) : FetchAreaAdsbLol(aircraft);
+            xSemaphoreTake(resultMutex, portMAX_DELAY);
+            areaResult.swap(aircraft);
+            areaOk = ok;
+            areaReady = true;
+            xSemaphoreGive(resultMutex);
+        }, NetWorker::PRIO_VISIBLE);
     }
 
     if (IsDetailOpen()
@@ -2026,14 +2094,24 @@ void AircraftManager::Update()
         && (nowSingle - lastSingleFetch >= SINGLE_FETCH_INTERVAL)) {
         lastSingleFetch = nowSingle;
 
-        if (trackingProvider == "opensky") {
-            FetchSingleAircraftOpenSky(selectedIcao);
-        }
-
+        const String icao = selectedIcao;
+        const bool useOpenSky = (trackingProvider == "opensky");
         const String airlabsKey = configServer.GetStoredString("airlabs-key");
-        if (!airlabsKey.isEmpty()) {
-            airlabsManager.updateSingle(selectedIcao);
-        }
+        net.Submit("single:" + icao, [this, icao, useOpenSky, airlabsKey]() {
+            if (useOpenSky) {
+                Aircraft ac{};
+                if (FetchSingleAircraftOpenSky(icao, ac)) {
+                    xSemaphoreTake(resultMutex, portMAX_DELAY);
+                    singleResult = ac;
+                    singleResultIcao = icao;
+                    singleReady = true;
+                    xSemaphoreGive(resultMutex);
+                }
+            }
+            if (!airlabsKey.isEmpty()) {
+                airlabsManager.updateSingle(icao);
+            }
+        }, NetWorker::PRIO_BACKGROUND);
     }
 }
 
@@ -2061,6 +2139,27 @@ void AircraftManager::NoteInteraction(unsigned long now)
     interactionPaused = true;
 }
 
+void AircraftManager::PrefetchNextInRotation(unsigned long now)
+{
+    (void)now;
+    auto next = trackedAircraft.upper_bound(selectedIcao);
+    for (size_t i = 0; i < trackedAircraft.size(); ++i) {
+        if (next == trackedAircraft.end()) next = trackedAircraft.begin();
+        if (IsAircraftVisible(next->second)) {
+            if (next->first == selectedIcao) return;
+            auto cached = flightDetailCache.find(next->first);
+            if (cached == flightDetailCache.end() || !cached->second.attempted) {
+                RequestFlightDetail(next->first, false, NetWorker::PRIO_PREFETCH);
+            }
+            mediaCache.RequestAircraftPhoto(next->first, next->second.state.registration, NetWorker::PRIO_PREFETCH);
+            AirlineInfo airline = AviationCatalog::LookupAirlineInfo(next->second.state.callsign, next->second.state.operatorName);
+            if (airline.matched) mediaCache.RequestCarrierLogo(airline.iata, NetWorker::PRIO_PREFETCH);
+            return;
+        }
+        ++next;
+    }
+}
+
 void AircraftManager::UpdateIdleSelection(unsigned long now)
 {
     // If a flight is pinned and valid, keep it featured when idle
@@ -2082,7 +2181,11 @@ void AircraftManager::UpdateIdleSelection(unsigned long now)
     interactionPaused = false;
 
     if (selected != trackedAircraft.end() && IsAircraftVisible(selected->second) &&
-        now - lastRotationMs < ROTATION_INTERVAL_MS) return;
+        now - lastRotationMs < ROTATION_INTERVAL_MS) {
+        // Warm route + photo + logo for the next plane a few seconds early so the switch is instant
+        if (now - lastRotationMs >= ROTATION_INTERVAL_MS - 5000) PrefetchNextInRotation(now);
+        return;
+    }
 
     auto next = trackedAircraft.upper_bound(selectedIcao);
     for (size_t i = 0; i < trackedAircraft.size(); ++i) {
@@ -2093,10 +2196,8 @@ void AircraftManager::UpdateIdleSelection(unsigned long now)
                 auto cached = flightDetailCache.find(selectedIcao);
                 if (cached != flightDetailCache.end() && cached->second.attempted) {
                     selectedDetail = cached->second;
-                } else if (now - lastRouteLookupMs >= ROUTE_LOOKUP_COOLDOWN_MS) {
-                    PopulateFlightDetail(selectedIcao, false);
                 } else {
-                    selectedDetail = FlightDetail{};
+                    PopulateFlightDetail(selectedIcao, false); // non-blocking: queued on the worker
                 }
                 // Queue photo & logo in background
                 mediaCache.RequestAircraftPhoto(selectedIcao, next->second.state.registration);

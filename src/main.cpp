@@ -5,6 +5,9 @@
 #include <esp_sleep.h>
 #include <driver/rtc_io.h>
 #include <Wire.h>
+#ifdef CROWPANEL_7
+#include "Backlight.h"
+#endif
 
 #include "LGFX.h"
 #include "WiFiManagerHelpers.h"
@@ -41,9 +44,12 @@ enum DeviceState {
 
 DeviceState deviceState = STATE_ON;
 #else
-constexpr int CROWPANEL_BL_PIN = 2;
-bool crowpanelBacklightOn = true;
 unsigned long lastWakeInteractionMs = 0;
+bool g_uiEvent = false;                     // touch press/release this loop -> force a redraw
+unsigned long brightnessPanelUntilMs = 0;   // brightness slider overlay visible until
+bool brightnessDragging = false;
+int g_pressedToolbarSlot = -1;
+unsigned long g_pressedToolbarUntilMs = 0;
 #endif
 
 float zoomRadius = 0.5;
@@ -299,54 +305,167 @@ static void DrawBootSplash(LGFX_Sprite& buf, const String& title, const String& 
   buf.drawRoundRect(36, 28, 728, 424, 12, lgfx::color888(0, 195, 255));
   buf.fillRoundRect(38, 30, 724, 72, 10, lgfx::color888(24, 38, 64));
 
-  buf.setTextFont(4);
+  UseFont(buf, 4);
   buf.setTextSize(1);
   buf.setTextColor(lgfx::color888(235, 245, 255));
   buf.drawCentreString(title.isEmpty() ? "SKY FRAME" : title, 400, 42);
 
-  buf.setTextFont(2);
+  UseFont(buf, 2);
   buf.setTextColor(lgfx::color888(0, 229, 255));
   buf.drawCentreString(subtitle.isEmpty() ? "Live Aviation Display" : subtitle, 400, 74);
 
   ThemePalette bootTheme = GetThemePalette(THEME_COCKPIT);
   VectorArt::DrawAircraftSilhouette(buf, 180, 124, 440, 210, SIL_WIDEBODY_TWIN, bootTheme, "A35K", "AVIOFRAME EDITION", "LIVE ADS-B", true);
 
-  buf.setTextFont(4);
+  UseFont(buf, 4);
   buf.setTextColor(lgfx::color888(255, 206, 72));
   buf.drawCentreString(statusLine, 400, 366);
 
-  buf.setTextFont(2);
+  UseFont(buf, 2);
   buf.setTextColor(lgfx::color888(110, 145, 180));
   buf.drawCentreString("http://microradar.local", 400, 404);
-  buf.setTextFont(1);
+  UseFont(buf, 1);
   buf.pushSprite(0, 0);
+}
+
+static void DrawSunIcon(LGFX_Sprite& buf, int cx, int cy, uint32_t color)
+{
+  buf.fillCircle(cx, cy, 4, color);
+  for (int i = 0; i < 8; ++i) {
+    float a = i * 0.785398f;
+    int x0 = cx + (int)lroundf(cosf(a) * 7.0f), y0 = cy + (int)lroundf(sinf(a) * 7.0f);
+    int x1 = cx + (int)lroundf(cosf(a) * 10.0f), y1 = cy + (int)lroundf(sinf(a) * 10.0f);
+    buf.drawLine(x0, y0, x1, y1, color);
+  }
+}
+
+static void DrawMagnifierIcon(LGFX_Sprite& buf, int cx, int cy, bool plusSign, uint32_t color)
+{
+  buf.drawCircle(cx - 2, cy - 2, 5, color);
+  buf.drawLine(cx + 2, cy + 2, cx + 6, cy + 6, color);
+  buf.drawFastHLine(cx - 4, cy - 2, 5, color);
+  if (plusSign) buf.drawFastVLine(cx - 2, cy - 4, 5, color);
+}
+
+static void DrawViewIcon(LGFX_Sprite& buf, int cx, int cy, uint32_t color)
+{
+  buf.drawRoundRect(cx - 6, cy - 5, 12, 10, 2, color);
+  buf.drawFastVLine(cx - 1, cy - 4, 8, color);
+  buf.drawFastHLine(cx, cy, 5, color);
+}
+
+static void DrawPaletteIcon(LGFX_Sprite& buf, int cx, int cy, uint32_t color)
+{
+  buf.drawCircle(cx, cy, 6, color);
+  buf.fillCircle(cx - 2, cy - 2, 1, color);
+  buf.fillCircle(cx + 2, cy - 2, 1, color);
+  buf.fillCircle(cx - 2, cy + 2, 1, color);
+}
+
+static void DrawChartIcon(LGFX_Sprite& buf, int cx, int cy, uint32_t color)
+{
+  buf.fillRect(cx - 5, cy, 2, 5, color);
+  buf.fillRect(cx - 1, cy - 3, 2, 8, color);
+  buf.fillRect(cx + 3, cy - 5, 2, 10, color);
+}
+
+static int ToolbarSlotFromX(int x)
+{
+  if (x < 90)  return 0;
+  if (x < 174) return 1;
+  if (x < 312) return 2;
+  if (x < 452) return 3;
+  if (x < 498) return 4;
+  if (x < 596) return 5;
+  return -1;
+}
+
+// Brightness slider overlay (above the toolbar). Auto-dismisses a few seconds after last touch.
+constexpr int BR_PANEL_X = 196, BR_PANEL_Y = 374, BR_PANEL_W = 408, BR_PANEL_H = 58;
+constexpr int BR_TRACK_X = 252, BR_TRACK_W = 296;
+
+static int BrightnessFromX(int x)
+{
+  float t = (float)(x - BR_TRACK_X) / (float)BR_TRACK_W;
+  t = constrain(t, 0.0f, 1.0f);
+  return 5 + (int)lroundf(t * 95.0f);
+}
+
+static void DrawBrightnessPanel(LGFX_Sprite& buf, const ThemePalette& theme)
+{
+  if (millis() >= brightnessPanelUntilMs) return;
+  const int pct = aircraftManager.GetBrightness();
+
+  buf.fillRoundRect(BR_PANEL_X, BR_PANEL_Y, BR_PANEL_W, BR_PANEL_H, 8, theme.bgCard);
+  buf.drawRoundRect(BR_PANEL_X, BR_PANEL_Y, BR_PANEL_W, BR_PANEL_H, 8, theme.borderPrimary);
+
+  const int cy = BR_PANEL_Y + BR_PANEL_H / 2;
+  DrawSunIcon(buf, BR_PANEL_X + 28, cy, theme.textAccent);
+
+  // Track + fill + knob
+  buf.fillRoundRect(BR_TRACK_X, cy - 3, BR_TRACK_W, 6, 3, theme.bgProgressTrack);
+  const int fillW = (int)((pct - 5) / 95.0f * BR_TRACK_W);
+  buf.fillRoundRect(BR_TRACK_X, cy - 3, max(fillW, 6), 6, 3, theme.textAccent);
+  buf.fillCircle(BR_TRACK_X + fillW, cy, 11, theme.textAccent);
+  buf.fillCircle(BR_TRACK_X + fillW, cy, 5, theme.bgCard);
+
+  UseFont(buf, 2);
+  buf.setTextColor(theme.textPrimary);
+  buf.drawRightString(String(pct) + "%", BR_PANEL_X + BR_PANEL_W - 14, cy - 8);
 }
 
 static void DrawBottomToolbar(LGFX_Sprite& buf, const ThemePalette& theme)
 {
   const int y = 442;
   const int h = 32;
+  const unsigned long nowMs = millis();
+  const int activeSlot = (nowMs < g_pressedToolbarUntilMs) ? g_pressedToolbarSlot : -1;
 
-  auto drawBtn = [&](int x, int w, const String& label, bool highlighted = false) {
-    buf.fillRoundRect(x, y, w, h, 5, highlighted ? theme.bgHeader : theme.buttonBg);
-    buf.drawRoundRect(x, y, w, h, 5, highlighted ? theme.textAccent : theme.buttonBorder);
-    buf.setTextFont(2);
-    buf.setTextSize(1);
-    buf.setTextColor(highlighted ? theme.textAccent : theme.buttonText);
-    buf.drawCentreString(label, x + w / 2, y + 8);
+  auto drawBtn = [&](int slot, int x, int w, int iconSpace, const String& label, bool highlighted = false) {
+    const bool pressed = (slot == activeSlot);
+    const bool lit = highlighted || pressed;
+    buf.fillRoundRect(x, y, w, h, 5, lit ? theme.bgHeader : theme.buttonBg);
+    buf.drawRoundRect(x, y, w, h, 5, lit ? theme.textAccent : theme.buttonBorder);
+    if (pressed) {
+      buf.drawRoundRect(x + 1, y + 1, w - 2, h - 2, 4, theme.textAccent);
+    }
+    if (!label.isEmpty()) {
+      UseFont(buf, 2);
+      buf.setTextSize(1);
+      buf.setTextColor(lit ? theme.textAccent : theme.buttonText);
+      buf.drawCentreString(label, x + iconSpace + (w - iconSpace) / 2, y + 9);
+    }
   };
 
-  drawBtn(8,   78, "ZOOM +");
-  drawBtn(92,  78, "ZOOM -");
-  drawBtn(176, 152, String("VIEW: ") + ViewModeToDisplayName(aircraftManager.GetViewMode()));
-  drawBtn(334, 154, String("THEME: ") + ThemeIdToDisplayName(aircraftManager.GetThemeId()));
-  drawBtn(494, 98,  String("STATS (") + String(aircraftManager.GetSpotterStats().totalUniqueSeen) + ")", aircraftManager.IsStatsModalOpen());
+  auto slotColor = [&](int slot, bool highlighted = false) -> uint32_t {
+    return (highlighted || slot == activeSlot) ? theme.textAccent : theme.buttonText;
+  };
+
+  const bool brightOpen = nowMs < brightnessPanelUntilMs;
+  drawBtn(0, 8,   78, 18, "ZOOM +");
+  DrawMagnifierIcon(buf, 20, y + h / 2, true, slotColor(0));
+
+  drawBtn(1, 92,  78, 18, "ZOOM -");
+  DrawMagnifierIcon(buf, 104, y + h / 2, false, slotColor(1));
+
+  drawBtn(2, 176, 134, 18, ViewModeToDisplayName(aircraftManager.GetViewMode()));
+  DrawViewIcon(buf, 188, y + h / 2, slotColor(2));
+
+  drawBtn(3, 316, 134, 18, ThemeIdToDisplayName(aircraftManager.GetThemeId()));
+  DrawPaletteIcon(buf, 328, y + h / 2, slotColor(3));
+
+  drawBtn(4, 456, 40, 0, "", brightOpen);
+  DrawSunIcon(buf, 476, y + h / 2, slotColor(4, brightOpen));
+
+  const bool statsOpen = aircraftManager.IsStatsModalOpen();
+  drawBtn(5, 502, 90, 16, String("STATS ") + String(aircraftManager.GetSpotterStats().totalUniqueSeen), statsOpen);
+  DrawChartIcon(buf, 513, y + h / 2, slotColor(5, statsOpen));
 
   // Right status & IP info box
   buf.fillRoundRect(598, y, 194, h, 5, theme.bgSecondary);
   buf.drawRoundRect(598, y, 194, h, 5, theme.borderSecondary);
 
-  buf.setTextFont(1);
+  UseFont(buf, 1);
   buf.setTextColor(theme.textPrimary);
   float rangeDist = aircraftManager.ConvertDistance(static_cast<float>(aircraftManager.getRadius() * 111.32));
   String rangeStr = "Range: " + String(rangeDist, rangeDist < 15.0f ? 1 : 0) + " " + aircraftManager.DistUnit();
@@ -358,6 +477,8 @@ static void DrawBottomToolbar(LGFX_Sprite& buf, const ThemePalette& theme)
 
   buf.setTextColor(theme.textMuted);
   buf.drawRightString("RST 3s", 786, y + 6);
+
+  DrawBrightnessPanel(buf, theme);
 }
 #endif
 
@@ -394,9 +515,11 @@ void setup()
   deviceState = STATE_ON;
 #else
   TouchManager::Initialise();
-  pinMode(CROWPANEL_BL_PIN, OUTPUT);
-  digitalWrite(CROWPANEL_BL_PIN, HIGH);
-  crowpanelBacklightOn = true;
+  {
+    // Start at the saved brightness (default 80%) so boot is never blinding
+    String savedBr = configServer.GetStoredString("brightness");
+    Backlight::Begin(savedBr.isEmpty() ? 80 : constrain(savedBr.toInt(), 5, 100));
+  }
   lastWakeInteractionMs = millis();
   Serial.printf("[BOOT] PSRAM: %lu bytes\n", static_cast<unsigned long>(ESP.getPsramSize()));
 #endif
@@ -506,11 +629,8 @@ void loop()
 
     if (touch.valid) {
 #ifdef CROWPANEL_7
+      g_uiEvent = true;
       lastWakeInteractionMs = now;
-      if (!crowpanelBacklightOn) {
-        digitalWrite(CROWPANEL_BL_PIN, HIGH);
-        crowpanelBacklightOn = true;
-      }
       aircraftManager.NoteInteraction(now);
 #endif
       if (!wasTouching) {
@@ -521,6 +641,19 @@ void loop()
       lastTouchX = touch.x;
       lastTouchY = touch.y;
 #ifdef CROWPANEL_7
+      if (touch.y >= 438) {
+        g_pressedToolbarSlot = ToolbarSlotFromX(touch.x);
+        g_pressedToolbarUntilMs = now + 180;
+      }
+      if (now < brightnessPanelUntilMs) {
+        const bool inPanel = touch.x >= BR_PANEL_X && touch.x < BR_PANEL_X + BR_PANEL_W &&
+                             touch.y >= BR_PANEL_Y && touch.y < BR_PANEL_Y + BR_PANEL_H;
+        if (brightnessDragging || (inPanel && touchDownMs == now)) brightnessDragging = true;
+        if (brightnessDragging) {
+          aircraftManager.SetBrightness(BrightnessFromX(touch.x), false);
+          brightnessPanelUntilMs = now + 3000;
+        }
+      }
       if (touch.x >= 680 && touch.y >= 440 && now - touchDownMs >= 3000) {
         Serial.println("[RESET] Clearing WiFi credentials");
         wm.resetSettings();
@@ -528,8 +661,18 @@ void loop()
       }
 #endif
     } else if (wasTouching) {
+#ifdef CROWPANEL_7
+      g_uiEvent = true;
+#endif
       unsigned long duration = now - touchDownMs;
       wasTouching = false;
+#ifdef CROWPANEL_7
+      if (brightnessDragging) {
+        brightnessDragging = false;
+        aircraftManager.SetBrightness(aircraftManager.GetBrightness(), true); // persist final value
+        brightnessPanelUntilMs = now + 3000;
+      } else
+#endif
       if (duration < TAP_MAX_MS) {
         Serial.printf("[TOUCH] Tap at %d,%d (hold=%lums)\n", lastTouchX, lastTouchY, duration);
 #ifdef CROWPANEL_7
@@ -539,10 +682,12 @@ void loop()
             aircraftManager.adjustRadius(-ZOOM_STEP);
           } else if (lastTouchX < 174) {
             aircraftManager.adjustRadius(+ZOOM_STEP);
-          } else if (lastTouchX < 332) {
+          } else if (lastTouchX < 312) {
             aircraftManager.CycleViewMode();
-          } else if (lastTouchX < 490) {
+          } else if (lastTouchX < 452) {
             aircraftManager.CycleTheme();
+          } else if (lastTouchX < 498) {
+            brightnessPanelUntilMs = (millis() < brightnessPanelUntilMs) ? 0 : millis() + 3000;
           } else if (lastTouchX < 596) {
             aircraftManager.ToggleStatsModal();
           }
@@ -568,18 +713,41 @@ void loop()
   }
 
 #ifdef CROWPANEL_7
-  // Night quiet-hours backlight auto-sleep (wakes on touch for 60s)
-  if (aircraftManager.IsNightQuietHours()) {
-    if (crowpanelBacklightOn && (millis() - lastWakeInteractionMs > 60000)) {
-      digitalWrite(CROWPANEL_BL_PIN, LOW);
-      crowpanelBacklightOn = false;
+  // Backlight: day level normally; night level during quiet hours (touch wakes to day level for 60 s)
+  {
+    int level = aircraftManager.GetBrightness();
+    if (aircraftManager.IsNightQuietHours() && (millis() - lastWakeInteractionMs > 60000)) {
+      level = aircraftManager.GetNightBrightness();
     }
-  } else if (!crowpanelBacklightOn) {
-    digitalWrite(CROWPANEL_BL_PIN, HIGH);
-    crowpanelBacklightOn = true;
+    Backlight::SetTarget(level);
+    Backlight::Tick();
   }
 
   aircraftManager.UpdateIdleSelection(millis());
+#endif
+
+#ifdef CROWPANEL_7
+  // Only redraw when something visible changed. The radar sweep animates continuously;
+  // static views (board/poster) refresh on events plus a 250 ms heartbeat for clocks/altitudes.
+  {
+    static uint32_t lastSig = 0xFFFFFFFFu;
+    static unsigned long lastDrawMs = 0;
+    const unsigned long nowMs = millis();
+    const bool panelOpen = nowMs < brightnessPanelUntilMs;
+    const bool pressFeedback = nowMs < g_pressedToolbarUntilMs;
+    const uint32_t sig = aircraftManager.RenderSignature()
+                       ^ (panelOpen ? 0x9E3779B9u : 0u)
+                       ^ (pressFeedback ? (0x517CC1B7u ^ static_cast<uint32_t>(g_pressedToolbarSlot + 1)) : 0u);
+    const bool due = aircraftManager.IsAnimatedView() || g_uiEvent || panelOpen || pressFeedback ||
+                     sig != lastSig || (nowMs - lastDrawMs) >= 250;
+    g_uiEvent = false;
+    if (!due) {
+      delay(8);
+      return;
+    }
+    lastSig = sig;
+    lastDrawMs = nowMs;
+  }
 #endif
 
   aircraftManager.Draw(backbuffer);
@@ -596,9 +764,6 @@ void loop()
 #endif
 
   backbuffer.pushSprite(0, 0);
-
-  // Process at most one queued aircraft photo / carrier logo download after frame is on screen
-  aircraftManager.ProcessBackgroundMedia();
 
 #ifdef CROWPANEL_7
   delay(20);

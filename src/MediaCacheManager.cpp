@@ -4,19 +4,55 @@
 #include <ArduinoJson.h>
 #include <esp_heap_caps.h>
 
+namespace {
+
+// Stream sink that collects an HTTP body straight into PSRAM. Using
+// HTTPClient::writeToStream (with HTTP/1.0) avoids the chunked-transfer framing
+// bytes that previously corrupted PNG/JPEG data read via the raw socket.
+class PsramSink : public Stream
+{
+public:
+    uint8_t* buf = nullptr;
+    size_t cap = 0;
+    size_t len = 0;
+    bool overflow = false;
+
+    explicit PsramSink(size_t capacity) : cap(capacity)
+    {
+        buf = static_cast<uint8_t*>(heap_caps_malloc(cap, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    }
+    ~PsramSink() { if (buf) heap_caps_free(buf); }
+
+    uint8_t* Release() { uint8_t* b = buf; buf = nullptr; return b; }
+
+    size_t write(uint8_t b) override { return write(&b, 1); }
+    size_t write(const uint8_t* d, size_t n) override
+    {
+        if (!buf || len + n > cap) { overflow = true; return 0; }
+        memcpy(buf + len, d, n);
+        len += n;
+        return n;
+    }
+    int available() override { return 0; }
+    int read() override { return -1; }
+    int peek() override { return -1; }
+    void flush() override {}
+};
+
+} // namespace
+
+MediaCacheManager::MediaCacheManager()
+{
+    mutex = xSemaphoreCreateMutex();
+}
+
 MediaCacheManager::~MediaCacheManager()
 {
     for (auto& [k, v] : photoCache) {
-        if (v.pixels565) {
-            heap_caps_free(v.pixels565);
-            v.pixels565 = nullptr;
-        }
+        if (v.pixels565) heap_caps_free(v.pixels565);
     }
     for (auto& [k, v] : logoCache) {
-        if (v.pixels565) {
-            heap_caps_free(v.pixels565);
-            v.pixels565 = nullptr;
-        }
+        if (v.pixels565) heap_caps_free(v.pixels565);
     }
 }
 
@@ -27,61 +63,44 @@ bool MediaCacheManager::DownloadBytesToPsram(const String& url, uint8_t*& outBuf
     if (WiFi.status() != WL_CONNECTED) return false;
 
     HTTPClient http;
-    http.setTimeout(3500);
+    http.setTimeout(4500);
+    http.setReuse(false);
+    http.useHTTP10(true); // no chunked encoding
     http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
     if (!http.begin(url)) return false;
-
     http.addHeader("User-Agent", "MicroRadar-AvioFrame/2.0");
+
+    const uint32_t t0 = millis();
     int code = http.GET();
     if (code != HTTP_CODE_OK) {
+        Serial.printf("[MEDIA] GET %s -> HTTP %d\n", url.c_str(), code);
         http.end();
         return false;
     }
 
     int contentLen = http.getSize();
-    if (contentLen > (int)maxBytes) {
+    if (contentLen > static_cast<int>(maxBytes)) {
+        Serial.printf("[MEDIA] %s too large (%d bytes)\n", url.c_str(), contentLen);
         http.end();
         return false;
     }
 
-    size_t allocSize = (contentLen > 0) ? (size_t)contentLen : maxBytes;
-    uint8_t* buf = static_cast<uint8_t*>(heap_caps_malloc(allocSize, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
-    if (!buf) {
+    PsramSink sink(contentLen > 0 ? static_cast<size_t>(contentLen) : maxBytes);
+    if (!sink.buf) {
         http.end();
         return false;
     }
-
-    WiFiClient* stream = http.getStreamPtr();
-    size_t totalRead = 0;
-    unsigned long startMs = millis();
-
-    while (http.connected() && (contentLen > 0 ? (totalRead < (size_t)contentLen) : true)) {
-        size_t avail = stream->available();
-        if (avail > 0) {
-            size_t toRead = min(avail, allocSize - totalRead);
-            if (toRead == 0) break;
-            int r = stream->readBytes(buf + totalRead, toRead);
-            if (r > 0) {
-                totalRead += r;
-                startMs = millis();
-            }
-        } else {
-            if (contentLen < 0 && totalRead > 0 && !stream->connected()) break;
-            if (millis() - startMs > 2500) break;
-            delay(2);
-        }
-        if (totalRead >= allocSize) break;
-    }
-
+    http.writeToStream(&sink);
     http.end();
 
-    if (totalRead < 64) {
-        heap_caps_free(buf);
+    if (sink.overflow || sink.len < 64 || (contentLen > 0 && sink.len != static_cast<size_t>(contentLen))) {
+        Serial.printf("[MEDIA] %s incomplete (%u of %d bytes)\n", url.c_str(), static_cast<unsigned>(sink.len), contentLen);
         return false;
     }
 
-    outBuf = buf;
-    outLen = totalRead;
+    outLen = sink.len;
+    outBuf = sink.Release();
+    Serial.printf("[MEDIA] %s %u bytes in %lu ms\n", url.c_str(), static_cast<unsigned>(outLen), static_cast<unsigned long>(millis() - t0));
     return true;
 }
 
@@ -137,123 +156,124 @@ bool MediaCacheManager::GetPngDimensions(const uint8_t* data, size_t len, int& o
 
 void MediaCacheManager::EvictOldestPhotoIfNeeded()
 {
-    if (photoCache.size() < MAX_CACHED_PHOTOS) return;
-    auto oldestIt = photoCache.begin();
+    // Caller holds the lock
+    size_t valid = 0;
+    for (auto& kv : photoCache) if (kv.second.pixels565) ++valid;
+    if (valid < MAX_CACHED_PHOTOS) return;
+
+    auto oldest = photoCache.end();
     for (auto it = photoCache.begin(); it != photoCache.end(); ++it) {
-        if (it->second.lastUsedMs < oldestIt->second.lastUsedMs) {
-            oldestIt = it;
-        }
+        if (!it->second.pixels565) continue;
+        if (oldest == photoCache.end() || it->second.lastUsedMs < oldest->second.lastUsedMs) oldest = it;
     }
-    if (oldestIt != photoCache.end()) {
-        if (oldestIt->second.pixels565) {
-            heap_caps_free(oldestIt->second.pixels565);
-        }
-        photoCache.erase(oldestIt);
+    if (oldest != photoCache.end()) {
+        heap_caps_free(oldest->second.pixels565);
+        photoCache.erase(oldest);
     }
 }
 
 void MediaCacheManager::EvictOldestLogoIfNeeded()
 {
-    if (logoCache.size() < MAX_CACHED_LOGOS) return;
-    auto oldestIt = logoCache.begin();
+    // Caller holds the lock
+    size_t valid = 0;
+    for (auto& kv : logoCache) if (kv.second.pixels565) ++valid;
+    if (valid < MAX_CACHED_LOGOS) return;
+
+    auto oldest = logoCache.end();
     for (auto it = logoCache.begin(); it != logoCache.end(); ++it) {
-        if (it->second.lastUsedMs < oldestIt->second.lastUsedMs) {
-            oldestIt = it;
-        }
+        if (!it->second.pixels565) continue;
+        if (oldest == logoCache.end() || it->second.lastUsedMs < oldest->second.lastUsedMs) oldest = it;
     }
-    if (oldestIt != logoCache.end()) {
-        if (oldestIt->second.pixels565) {
-            heap_caps_free(oldestIt->second.pixels565);
-        }
-        logoCache.erase(oldestIt);
+    if (oldest != logoCache.end()) {
+        heap_caps_free(oldest->second.pixels565);
+        logoCache.erase(oldest);
     }
 }
 
-void MediaCacheManager::RequestAircraftPhoto(const String& icao24, const String& reg)
+void MediaCacheManager::RecordPhotoFailure(const String& key, bool permanent)
 {
-    if (!mediaEnabled || icao24.isEmpty()) return;
+    Lock();
+    CachedPhoto& e = photoCache[key];
+    e.valid = false;
+    e.failCount = permanent ? MAX_TRIES : static_cast<uint8_t>(e.failCount + 1);
+    e.retryAtMs = millis() + 30000UL * e.failCount;
+    e.lastUsedMs = millis();
+    Unlock();
+}
+
+void MediaCacheManager::RecordLogoFailure(const String& key, bool permanent)
+{
+    Lock();
+    CachedLogo& e = logoCache[key];
+    e.valid = false;
+    e.failCount = permanent ? MAX_TRIES : static_cast<uint8_t>(e.failCount + 1);
+    e.retryAtMs = millis() + 30000UL * e.failCount;
+    e.lastUsedMs = millis();
+    Unlock();
+}
+
+void MediaCacheManager::RequestAircraftPhoto(const String& icao24, const String& reg, int prio)
+{
+    if (!mediaEnabled || !worker || icao24.isEmpty()) return;
     String key = icao24;
     key.toLowerCase();
 
+    Lock();
     auto it = photoCache.find(key);
-    if (it != photoCache.end() && it->second.attempted) {
+    if (it != photoCache.end()) {
         it->second.lastUsedMs = millis();
-        return;
+        if (it->second.valid || it->second.failCount >= MAX_TRIES || millis() < it->second.retryAtMs) {
+            Unlock();
+            return;
+        }
     }
+    Unlock();
 
-    pendingPhotoIcao = key;
-    pendingPhotoReg = reg;
+    String regCopy = reg;
+    worker->Submit("photo:" + key, [this, key, regCopy]() { FetchAircraftPhotoNow(key, regCopy); }, prio);
 }
 
-void MediaCacheManager::RequestCarrierLogo(const String& iata)
+void MediaCacheManager::RequestCarrierLogo(const String& iata, int prio)
 {
-    if (!mediaEnabled || iata.length() != 2 || iata == "GA") return;
+    if (!mediaEnabled || !worker || iata.length() != 2 || iata == "GA") return;
     String key = iata;
     key.toUpperCase();
 
+    Lock();
     auto it = logoCache.find(key);
-    if (it != logoCache.end() && it->second.attempted) {
+    if (it != logoCache.end()) {
         it->second.lastUsedMs = millis();
-        return;
-    }
-
-    pendingLogoIata = key;
-}
-
-void MediaCacheManager::ProcessPendingQueue()
-{
-    if (!mediaEnabled || WiFi.status() != WL_CONNECTED) return;
-    unsigned long now = millis();
-    if (now - lastFetchMs < FETCH_COOLDOWN_MS) return;
-
-    if (!pendingLogoIata.isEmpty()) {
-        String iata = pendingLogoIata;
-        pendingLogoIata = "";
-        auto it = logoCache.find(iata);
-        if (it == logoCache.end() || !it->second.attempted) {
-            lastFetchMs = now;
-            FetchCarrierLogoNow(iata);
+        if (it->second.valid || it->second.failCount >= MAX_TRIES || millis() < it->second.retryAtMs) {
+            Unlock();
             return;
         }
     }
+    Unlock();
 
-    if (!pendingPhotoIcao.isEmpty()) {
-        String icao = pendingPhotoIcao;
-        String reg = pendingPhotoReg;
-        pendingPhotoIcao = "";
-        pendingPhotoReg = "";
-        auto it = photoCache.find(icao);
-        if (it == photoCache.end() || !it->second.attempted) {
-            lastFetchMs = now;
-            FetchAircraftPhotoNow(icao, reg);
-            return;
-        }
-    }
+    worker->Submit("logo:" + key, [this, key]() { FetchCarrierLogoNow(key); }, prio);
 }
 
-bool MediaCacheManager::FetchAircraftPhotoNow(const String& icao24, const String& reg)
+void MediaCacheManager::FetchAircraftPhotoNow(const String& icao24, const String& reg)
 {
-    EvictOldestPhotoIfNeeded();
+    if (WiFi.status() != WL_CONNECTED) return; // try again later without penalty
 
-    CachedPhoto entry;
-    entry.attempted = true;
-    entry.valid = false;
-    entry.lastUsedMs = millis();
-
-    HTTPClient http;
-    http.setTimeout(3000);
-    String apiUrl = "https://api.planespotters.net/pub/photos/hex/" + icao24;
-    String thumbUrl = "";
-    String photographer = "";
+    String thumbUrl;
+    String photographer;
+    bool apiReachable = false;
 
     auto tryQueryApi = [&](const String& url) -> bool {
+        HTTPClient http;
+        http.setTimeout(4000);
         if (!http.begin(url)) return false;
         http.addHeader("User-Agent", "MicroRadar-AvioFrame/2.0");
         int code = http.GET();
-        if (code != HTTP_CODE_OK) {
+        if (code != HTTP_CODE_OK && code != HTTP_CODE_NOT_FOUND) {
+            Serial.printf("[MEDIA] planespotters %s -> HTTP %d\n", url.c_str(), code);
             http.end();
             return false;
         }
+        apiReachable = true;
+        if (code != HTTP_CODE_OK) { http.end(); return false; }
         String payload = http.getString();
         http.end();
 
@@ -262,164 +282,171 @@ bool MediaCacheManager::FetchAircraftPhotoNow(const String& icao24, const String
         JsonArray photos = doc["photos"];
         if (photos.isNull() || photos.size() == 0) return false;
         JsonObject first = photos[0];
-        thumbUrl = first["thumbnail"]["src"] | "";
-        if (thumbUrl.isEmpty()) {
-            thumbUrl = first["thumbnail_large"]["src"] | "";
-        }
+        thumbUrl = first["thumbnail_large"]["src"] | "";
+        if (thumbUrl.isEmpty()) thumbUrl = first["thumbnail"]["src"] | "";
         photographer = first["photographer"] | "";
         return !thumbUrl.isEmpty();
     };
 
-    if (!tryQueryApi(apiUrl) && !reg.isEmpty()) {
+    if (!tryQueryApi("https://api.planespotters.net/pub/photos/hex/" + icao24) && !reg.isEmpty()) {
         tryQueryApi("https://api.planespotters.net/pub/photos/reg/" + reg);
     }
 
     if (thumbUrl.isEmpty()) {
-        photoCache[icao24] = entry;
-        return false;
+        // Reachable but no photo => don't retry this session; unreachable => retry with backoff
+        RecordPhotoFailure(icao24, apiReachable);
+        Serial.printf("[MEDIA] no photo for %s (%s)\n", icao24.c_str(), apiReachable ? "none exists" : "api unreachable");
+        return;
     }
 
     uint8_t* jpgBytes = nullptr;
     size_t jpgLen = 0;
-    if (!DownloadBytesToPsram(thumbUrl, jpgBytes, jpgLen, 98304)) {
-        photoCache[icao24] = entry;
-        return false;
+    if (!DownloadBytesToPsram(thumbUrl, jpgBytes, jpgLen, 160000)) {
+        RecordPhotoFailure(icao24, false);
+        return;
     }
 
-    int srcW = 200, srcH = 133;
+    int srcW = 420, srcH = 280;
     GetJpegDimensions(jpgBytes, jpgLen, srcW, srcH);
-    if (srcW <= 0) srcW = 200;
-    if (srcH <= 0) srcH = 133;
+    if (srcW <= 0) srcW = 420;
+    if (srcH <= 0) srcH = 280;
 
-    // Decode once into a 16-bit RGB565 sprite in PSRAM
     LGFX_Sprite decodeSpr;
     decodeSpr.setColorDepth(16);
     decodeSpr.setPsram(true);
     if (!decodeSpr.createSprite(PHOTO_CACHE_W, PHOTO_CACHE_H)) {
         heap_caps_free(jpgBytes);
-        photoCache[icao24] = entry;
-        return false;
+        RecordPhotoFailure(icao24, false);
+        return;
     }
 
     decodeSpr.fillScreen(lgfx::color888(16, 22, 34));
-    float scaleX = (float)PHOTO_CACHE_W / (float)srcW;
-    float scaleY = (float)PHOTO_CACHE_H / (float)srcH;
-    float coverScale = max(scaleX, scaleY);
-
+    float coverScale = max((float)PHOTO_CACHE_W / srcW, (float)PHOTO_CACHE_H / srcH);
     bool decoded = decodeSpr.drawJpg(
         jpgBytes, jpgLen,
         PHOTO_CACHE_W / 2, PHOTO_CACHE_H / 2,
         PHOTO_CACHE_W, PHOTO_CACHE_H,
         0, 0,
         coverScale, coverScale,
-        datum_t::middle_center
-    );
+        datum_t::middle_center);
     heap_caps_free(jpgBytes);
 
     if (!decoded) {
+        Serial.printf("[MEDIA] JPEG decode failed for %s\n", icao24.c_str());
         decodeSpr.deleteSprite();
-        photoCache[icao24] = entry;
-        return false;
+        RecordPhotoFailure(icao24, false);
+        return;
     }
 
-    size_t pixelBytes = PHOTO_CACHE_W * PHOTO_CACHE_H * sizeof(uint16_t);
+    const size_t pixelBytes = PHOTO_CACHE_W * PHOTO_CACHE_H * sizeof(uint16_t);
     uint16_t* buf565 = static_cast<uint16_t*>(heap_caps_malloc(pixelBytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
     if (!buf565) {
         decodeSpr.deleteSprite();
-        photoCache[icao24] = entry;
-        return false;
+        RecordPhotoFailure(icao24, false);
+        return;
     }
-
     memcpy(buf565, decodeSpr.getBuffer(), pixelBytes);
     decodeSpr.deleteSprite();
 
-    entry.valid = true;
-    entry.pixels565 = buf565;
-    entry.photographer = photographer;
-    photoCache[icao24] = entry;
+    Lock();
+    EvictOldestPhotoIfNeeded();
+    CachedPhoto& e = photoCache[icao24];
+    if (e.pixels565) heap_caps_free(e.pixels565);
+    e.valid = true;
+    e.pixels565 = buf565;
+    e.photographer = photographer;
+    e.failCount = 0;
+    e.lastUsedMs = millis();
+    version = version + 1;
+    Unlock();
 
-    Serial.printf("[MEDIA] Cached real aircraft photo for %s (by %s)\n", icao24.c_str(), photographer.c_str());
-    return true;
+    Serial.printf("[MEDIA] cached photo for %s (by %s)\n", icao24.c_str(), photographer.c_str());
 }
 
-bool MediaCacheManager::FetchCarrierLogoNow(const String& iata)
+void MediaCacheManager::FetchCarrierLogoNow(const String& iata)
 {
-    EvictOldestLogoIfNeeded();
+    if (WiFi.status() != WL_CONNECTED) return;
 
-    CachedLogo entry;
-    entry.attempted = true;
-    entry.valid = false;
-    entry.lastUsedMs = millis();
+    // Source chain: Aviasales CDN first, Kiwi as fallback
+    const String urls[] = {
+        "https://pics.avs.io/320/128/" + iata + ".png",
+        "https://images.kiwi.com/airlines/128x128/" + iata + ".png",
+    };
 
-    // Travelpayouts / Aviasales public airline logo CDN (PNG)
-    String url = "https://pics.avs.io/140/60/" + iata + ".png";
-    uint8_t* pngBytes = nullptr;
-    size_t pngLen = 0;
+    for (const String& url : urls) {
+        uint8_t* pngBytes = nullptr;
+        size_t pngLen = 0;
+        if (!DownloadBytesToPsram(url, pngBytes, pngLen, 90000)) continue;
 
-    if (!DownloadBytesToPsram(url, pngBytes, pngLen, 49152)) {
-        logoCache[iata] = entry;
-        return false;
-    }
+        int srcW = 0, srcH = 0;
+        if (!GetPngDimensions(pngBytes, pngLen, srcW, srcH)) {
+            Serial.printf("[MEDIA] %s is not a PNG\n", url.c_str());
+            heap_caps_free(pngBytes);
+            continue;
+        }
 
-    int srcW = 140, srcH = 60;
-    GetPngDimensions(pngBytes, pngLen, srcW, srcH);
-    if (srcW <= 0) srcW = 140;
-    if (srcH <= 0) srcH = 60;
+        LGFX_Sprite decodeSpr;
+        decodeSpr.setColorDepth(16);
+        decodeSpr.setPsram(true);
+        if (!decodeSpr.createSprite(LOGO_CACHE_W, LOGO_CACHE_H)) {
+            heap_caps_free(pngBytes);
+            continue;
+        }
 
-    LGFX_Sprite decodeSpr;
-    decodeSpr.setColorDepth(16);
-    decodeSpr.setPsram(true);
-    if (!decodeSpr.createSprite(LOGO_CACHE_W, LOGO_CACHE_H)) {
+        // Clean light plate so dark and coloured logos are legible on every theme
+        decodeSpr.fillScreen(lgfx::color888(248, 248, 250));
+        float fitScale = min((float)(LOGO_CACHE_W - 12) / srcW, (float)(LOGO_CACHE_H - 8) / srcH);
+        bool decoded = decodeSpr.drawPng(
+            pngBytes, pngLen,
+            LOGO_CACHE_W / 2, LOGO_CACHE_H / 2,
+            LOGO_CACHE_W, LOGO_CACHE_H,
+            0, 0,
+            fitScale, fitScale,
+            datum_t::middle_center);
         heap_caps_free(pngBytes);
-        logoCache[iata] = entry;
-        return false;
-    }
 
-    // Clean light plate background so dark and colored airline logos are always legible
-    decodeSpr.fillScreen(lgfx::color888(246, 246, 248));
-    float fitScale = min((float)(LOGO_CACHE_W - 6) / (float)srcW, (float)(LOGO_CACHE_H - 4) / (float)srcH);
+        if (!decoded) {
+            Serial.printf("[MEDIA] PNG decode failed for %s\n", url.c_str());
+            decodeSpr.deleteSprite();
+            continue;
+        }
 
-    bool decoded = decodeSpr.drawPng(
-        pngBytes, pngLen,
-        LOGO_CACHE_W / 2, LOGO_CACHE_H / 2,
-        LOGO_CACHE_W, LOGO_CACHE_H,
-        0, 0,
-        fitScale, fitScale,
-        datum_t::middle_center
-    );
-    heap_caps_free(pngBytes);
-
-    if (!decoded) {
+        const size_t pixelBytes = LOGO_CACHE_W * LOGO_CACHE_H * sizeof(uint16_t);
+        uint16_t* buf565 = static_cast<uint16_t*>(heap_caps_malloc(pixelBytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+        if (!buf565) {
+            decodeSpr.deleteSprite();
+            continue;
+        }
+        memcpy(buf565, decodeSpr.getBuffer(), pixelBytes);
         decodeSpr.deleteSprite();
-        logoCache[iata] = entry;
-        return false;
+
+        Lock();
+        EvictOldestLogoIfNeeded();
+        CachedLogo& e = logoCache[iata];
+        if (e.pixels565) heap_caps_free(e.pixels565);
+        e.valid = true;
+        e.pixels565 = buf565;
+        e.failCount = 0;
+        e.lastUsedMs = millis();
+        version = version + 1;
+        Unlock();
+
+        Serial.printf("[MEDIA] cached logo %s\n", iata.c_str());
+        return;
     }
 
-    size_t pixelBytes = LOGO_CACHE_W * LOGO_CACHE_H * sizeof(uint16_t);
-    uint16_t* buf565 = static_cast<uint16_t*>(heap_caps_malloc(pixelBytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
-    if (!buf565) {
-        decodeSpr.deleteSprite();
-        logoCache[iata] = entry;
-        return false;
-    }
-
-    memcpy(buf565, decodeSpr.getBuffer(), pixelBytes);
-    decodeSpr.deleteSprite();
-
-    entry.valid = true;
-    entry.pixels565 = buf565;
-    logoCache[iata] = entry;
-
-    Serial.printf("[MEDIA] Cached airline logo for %s\n", iata.c_str());
-    return true;
+    RecordLogoFailure(iata, false);
 }
 
 bool MediaCacheManager::HasAircraftPhoto(const String& icao24) const
 {
     String key = icao24;
     key.toLowerCase();
+    Lock();
     auto it = photoCache.find(key);
-    return (it != photoCache.end() && it->second.valid && it->second.pixels565 != nullptr);
+    bool r = (it != photoCache.end() && it->second.valid && it->second.pixels565 != nullptr);
+    Unlock();
+    return r;
 }
 
 void MediaCacheManager::DrawAircraftVisual(
@@ -436,31 +463,30 @@ void MediaCacheManager::DrawAircraftVisual(
 
     RequestAircraftPhoto(key, reg);
 
+    bool drewPhoto = false;
+    Lock();
     auto it = photoCache.find(key);
     if (mediaEnabled && it != photoCache.end() && it->second.valid && it->second.pixels565) {
         it->second.lastUsedMs = millis();
+        drewPhoto = true;
 
         dst.fillRoundRect(x, y, w, h, 6, theme.bgSecondary);
 
-        // Push cached RGB565 photo centered or scaled into [x+2, y+2, w-4, h-4]
-        int innerW = w - 4;
-        int innerH = h - 4;
+        const int innerW = w - 4;
+        const int innerH = h - 4;
         dst.setClipRect(x + 2, y + 2, innerW, innerH);
 
         LGFX_Sprite srcSpr;
         srcSpr.setColorDepth(16);
         srcSpr.setBuffer(it->second.pixels565, PHOTO_CACHE_W, PHOTO_CACHE_H, 16);
 
-        float sx = (float)innerW / (float)PHOTO_CACHE_W;
-        float sy = (float)innerH / (float)PHOTO_CACHE_H;
-        float scale = max(sx, sy);
+        const float scale = max((float)innerW / PHOTO_CACHE_W, (float)innerH / PHOTO_CACHE_H);
         srcSpr.pushRotateZoom(&dst, x + w / 2, y + h / 2, 0.0f, scale, scale);
 
-        // Subtle bottom caption bar for photographer credit & aircraft model
         if (showAnnotations) {
-            int barH = 16;
+            const int barH = 16;
             dst.fillRect(x + 2, y + h - 2 - barH, innerW, barH, lgfx::color888(10, 14, 22));
-            dst.setTextFont(1);
+            UseFont(dst, 1);
             dst.setTextSize(1);
             dst.setTextColor(lgfx::color888(230, 238, 250));
             String leftLabel = !typeInfo.fullName.isEmpty() ? typeInfo.fullName : typeInfo.code;
@@ -477,16 +503,16 @@ void MediaCacheManager::DrawAircraftVisual(
 
         dst.clearClipRect();
         dst.drawRoundRect(x, y, w, h, 6, theme.borderPrimary);
-        return;
     }
+    Unlock();
+    if (drewPhoto) return;
 
-    // Instant vector silhouette fallback
+    // Instant vector silhouette fallback while loading / when no photo exists
     VectorArt::DrawAircraftSilhouette(
         dst, x, y, w, h,
         typeInfo.category, theme,
         typeInfo.code, typeInfo.fullName, reg,
-        showAnnotations
-    );
+        showAnnotations);
 }
 
 void MediaCacheManager::DrawCarrierBadge(
@@ -500,26 +526,28 @@ void MediaCacheManager::DrawCarrierBadge(
         key.toUpperCase();
         RequestCarrierLogo(key);
 
+        bool drew = false;
+        Lock();
         auto it = logoCache.find(key);
         if (it != logoCache.end() && it->second.valid && it->second.pixels565) {
             it->second.lastUsedMs = millis();
+            drew = true;
 
-            dst.fillRoundRect(x, y, w, h, 5, lgfx::color888(246, 246, 248));
+            dst.fillRoundRect(x, y, w, h, 5, lgfx::color888(248, 248, 250));
             dst.setClipRect(x + 2, y + 2, w - 4, h - 4);
 
             LGFX_Sprite srcSpr;
             srcSpr.setColorDepth(16);
             srcSpr.setBuffer(it->second.pixels565, LOGO_CACHE_W, LOGO_CACHE_H, 16);
 
-            float sx = (float)(w - 4) / (float)LOGO_CACHE_W;
-            float sy = (float)(h - 4) / (float)LOGO_CACHE_H;
-            float scale = min(sx, sy);
+            const float scale = min((float)(w - 4) / LOGO_CACHE_W, (float)(h - 4) / LOGO_CACHE_H);
             srcSpr.pushRotateZoom(&dst, x + w / 2, y + h / 2, 0.0f, scale, scale);
 
             dst.clearClipRect();
             dst.drawRoundRect(x, y, w, h, 5, theme.borderPrimary);
-            return;
         }
+        Unlock();
+        if (drew) return;
     }
 
     VectorArt::DrawCarrierLogoBadge(dst, x, y, w, h, airline, theme);

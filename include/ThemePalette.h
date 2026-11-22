@@ -183,35 +183,35 @@ inline const ThemePalette& GetThemePalette(ThemeId id)
             lgfx::color888(190, 222, 255), // buttonBorder
             lgfx::color888(245, 250, 255)  // buttonText
         },
-        // 4: Classic Radar Green (Original Phosphor CRT)
+        // 4: Classic Radar Green (Refined Phosphor CRT)
         {
             THEME_RADAR_CRT, "radar", "Classic Radar", false,
-            lgfx::color888(0, 6, 0),       // bgPrimary
-            lgfx::color888(0, 14, 0),      // bgSecondary
-            lgfx::color888(0, 18, 4),      // bgCard
-            lgfx::color888(0, 34, 8),      // bgHeader
-            lgfx::color888(0, 24, 6),      // bgRowAlt
-            lgfx::color888(0, 52, 12),     // bgProgressTrack
-            lgfx::color888(0, 220, 40),    // borderPrimary
-            lgfx::color888(0, 95, 20),     // borderSecondary
-            lgfx::color888(0, 45, 10),     // gridLine
-            lgfx::color888(0, 255, 60),    // textPrimary
-            lgfx::color888(0, 220, 170),   // textSecondary
-            lgfx::color888(0, 145, 40),    // textMuted
-            lgfx::color888(80, 255, 120),  // textAccent
-            lgfx::color888(220, 220, 0),   // textWarning
-            lgfx::color888(0, 255, 255),   // textPinned
-            lgfx::color888(0, 200, 30),    // radarRingOuter
-            lgfx::color888(0, 68, 12),     // radarRingInner
-            lgfx::color888(0, 235, 40),    // radarSweepLead
-            0, 180, 20,                    // radarSweep RGB
-            lgfx::color888(0, 255, 40),    // aircraftDot
-            lgfx::color888(0, 255, 255),   // aircraftSelected
-            lgfx::color888(0, 115, 25),    // aircraftTrail
-            lgfx::color888(0, 235, 180),   // routeLine
-            lgfx::color888(0, 24, 4),      // buttonBg
-            lgfx::color888(0, 190, 30),    // buttonBorder
-            lgfx::color888(0, 255, 50)     // buttonText
+            lgfx::color888(2, 10, 4),      // bgPrimary
+            lgfx::color888(5, 20, 9),      // bgSecondary
+            lgfx::color888(6, 24, 11),     // bgCard
+            lgfx::color888(10, 42, 18),    // bgHeader
+            lgfx::color888(8, 30, 14),     // bgRowAlt
+            lgfx::color888(14, 56, 24),    // bgProgressTrack
+            lgfx::color888(28, 215, 76),   // borderPrimary
+            lgfx::color888(16, 108, 42),   // borderSecondary
+            lgfx::color888(10, 52, 22),    // gridLine
+            lgfx::color888(140, 255, 168), // textPrimary
+            lgfx::color888(72, 228, 156),  // textSecondary
+            lgfx::color888(42, 152, 78),   // textMuted
+            lgfx::color888(95, 255, 145),  // textAccent
+            lgfx::color888(240, 215, 60),  // textWarning
+            lgfx::color888(80, 245, 245),  // textPinned
+            lgfx::color888(24, 198, 64),   // radarRingOuter
+            lgfx::color888(12, 76, 26),    // radarRingInner
+            lgfx::color888(64, 245, 96),   // radarSweepLead
+            16, 175, 48,                   // radarSweep RGB
+            lgfx::color888(60, 255, 96),   // aircraftDot
+            lgfx::color888(90, 250, 250),  // aircraftSelected
+            lgfx::color888(18, 122, 44),   // aircraftTrail
+            lgfx::color888(64, 235, 175),  // routeLine
+            lgfx::color888(8, 32, 14),     // buttonBg
+            lgfx::color888(24, 188, 64),   // buttonBorder
+            lgfx::color888(130, 255, 158)  // buttonText
         }
     };
 
@@ -230,7 +230,7 @@ inline ThemeId ParseThemeId(const String& key)
     if (k == "solari")    return THEME_SOLARI;
     if (k == "blueprint") return THEME_BLUEPRINT;
     if (k == "radar")     return THEME_RADAR_CRT;
-    return THEME_COCKPIT; // Default to Midnight Cockpit
+    return THEME_RADAR_CRT; // Default to Classic Radar
 }
 
 inline const char* ThemeIdToKey(ThemeId id)

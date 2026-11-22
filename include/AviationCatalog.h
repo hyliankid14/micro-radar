@@ -270,7 +270,7 @@ namespace AviationCatalog
             info.name = "Private / UK Registry";
             info.iata = "GA";
         } else if (!info.icao.isEmpty()) {
-            info.name = "Operator " + info.icao;
+            info.name = "Private / Unlisted";
         } else {
             info.name = "General Aviation";
         }
@@ -534,7 +534,7 @@ namespace AviationCatalog
         } else if (!code.isEmpty()) {
             info.fullName = "Aircraft " + code;
         } else {
-            info.fullName = "Commercial Aircraft";
+            info.fullName = "Type unknown";
         }
 
         // Emitter category override if available (A7 = Rotorcraft, A1 = Light, A5 = Heavy)

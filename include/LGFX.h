@@ -116,3 +116,31 @@ public:
     }
 };
 #endif
+
+// ---------------------------------------------------------------------------
+// UI typography. On the 7" CrowPanel the legacy bitmap fonts (1/2/4/6) are replaced
+// by anti-aliased DejaVu faces for a cleaner look. Set UI_SMOOTH_FONTS to 0 to revert.
+// ---------------------------------------------------------------------------
+#ifndef UI_SMOOTH_FONTS
+#ifdef CROWPANEL_7
+#define UI_SMOOTH_FONTS 1
+#else
+#define UI_SMOOTH_FONTS 0
+#endif
+#endif
+
+template <typename Gfx>
+inline void UseFont(Gfx& g, int legacyFont)
+{
+#if UI_SMOOTH_FONTS
+    switch (legacyFont) {
+        case 1:  g.setFont(&lgfx::fonts::DejaVu9);  break;
+        case 2:  g.setFont(&lgfx::fonts::DejaVu12); break;
+        case 4:  g.setFont(&lgfx::fonts::DejaVu24); break;
+        case 6:  g.setFont(&lgfx::fonts::DejaVu40); break;
+        default: g.setFont(&lgfx::fonts::DejaVu12); break;
+    }
+#else
+    g.setTextFont(legacyFont);
+#endif
+}

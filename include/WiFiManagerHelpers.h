@@ -26,7 +26,7 @@ namespace WiFiManagerHelpers
             tft.drawRoundRect(40, 28, 720, 424, 12, lgfx::color888(0, 195, 255));
             tft.fillRoundRect(42, 30, 716, 62, 10, lgfx::color888(24, 38, 64));
 
-            tft.setTextFont(4);
+            UseFont(tft, 4);
             tft.setTextSize(1);
             tft.setTextColor(lgfx::color888(235, 245, 255));
             tft.drawCentreString("SKY FRAME — FIRST-TIME WI-FI SETUP", 400, 48);
@@ -40,30 +40,30 @@ namespace WiFiManagerHelpers
             tft.qrcode(wifiQr, qrX, qrY, qrSize, 3);
 
             int tx = 320;
-            tft.setTextFont(4);
+            UseFont(tft, 4);
             tft.setTextColor(lgfx::color888(0, 229, 255));
             tft.drawString("Step 1: Scan QR Code", tx, 140);
 
-            tft.setTextFont(2);
+            UseFont(tft, 2);
             tft.setTextColor(lgfx::color888(210, 230, 250));
             tft.drawString("Point your phone camera at the QR code", tx, 174);
             tft.drawString("to join the setup hotspot automatically:", tx, 194);
 
             tft.fillRoundRect(tx, 222, 310, 38, 6, lgfx::color888(18, 28, 46));
             tft.drawRoundRect(tx, 222, 310, 38, 6, lgfx::color888(0, 195, 255));
-            tft.setTextFont(4);
+            UseFont(tft, 4);
             tft.setTextColor(lgfx::color888(255, 206, 72));
             tft.drawCentreString(WiFiManagerName, tx + 155, 230);
 
-            tft.setTextFont(4);
+            UseFont(tft, 4);
             tft.setTextColor(lgfx::color888(0, 229, 255));
             tft.drawString("Step 2: Choose Home Wi-Fi", tx, 282);
 
-            tft.setTextFont(2);
+            UseFont(tft, 2);
             tft.setTextColor(lgfx::color888(210, 230, 250));
             tft.drawString("A setup page will pop up on your phone", tx, 316);
             tft.drawString("(or open http://192.168.4.1 in your browser).", tx, 336);
-            tft.setTextFont(1);
+            UseFont(tft, 1);
 #else
             const int lineHeight = tft.fontHeight() + 10;
             tft.drawCenterString("- SETUP -", tft.width() / 2, tft.height() / 2 - lineHeight);

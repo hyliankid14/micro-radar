@@ -132,6 +132,7 @@ static const char CONFIG_HTML[] PROGMEM = R"RAWHTML(
     vertical-align: middle;
   }
   .row-input { display: flex; gap: 8px; align-items: center; }
+  input[type="range"] { width: 100%; accent-color: #00c3ff; }
   input[type="text"], input[type="number"], input[type="password"], select {
     width: 100%;
     background: #0a101b;
@@ -407,6 +408,14 @@ static const char CONFIG_HTML[] PROGMEM = R"RAWHTML(
           <input type="number" name="tz-offset" id="f-tz" step="15" min="-720" max="840" placeholder="0 (e.g. 60 for BST)">
         </div>
         <div class="field">
+          <label>Daytime Brightness (<span id="v-bright">80</span>%)</label>
+          <input type="range" name="brightness" id="f-bright" min="5" max="100" step="5" value="80" oninput="document.getElementById('v-bright').textContent=this.value">
+        </div>
+        <div class="field">
+          <label>Night Brightness (<span id="v-nbright">10</span>%, 0 = screen off)</label>
+          <input type="range" name="night-brightness" id="f-nbright" min="0" max="100" step="5" value="10" oninput="document.getElementById('v-nbright').textContent=this.value">
+        </div>
+        <div class="field">
           <label>Night Quiet Start Hour (0-23)</label>
           <input type="number" name="night-start" id="f-nstart" min="0" max="23" value="23">
         </div>
@@ -416,7 +425,7 @@ static const char CONFIG_HTML[] PROGMEM = R"RAWHTML(
         </div>
       </div>
       <div class="check-grid">
-        <label class="check-item"><input type="checkbox" name="night-dim" id="f-ndim"> Auto-sleep display at night</label>
+        <label class="check-item"><input type="checkbox" name="night-dim" id="f-ndim"> Dim display at night (uses night brightness)</label>
         <label class="check-item"><input type="checkbox" name="auto-cycle-views" id="f-autocycle"> Auto-cycle display views</label>
       </div>
     </div>
@@ -627,6 +636,14 @@ function loadConfig() {
     document.getElementById('f-tz').value = c.tzOffset || '0';
     document.getElementById('f-nstart').value = c.nightStart || '23';
     document.getElementById('f-nend').value = c.nightEnd || '7';
+    {
+      const b = (c.brightness !== undefined && c.brightness !== '') ? c.brightness : '80';
+      const nb = (c.nightBrightness !== undefined && c.nightBrightness !== '') ? c.nightBrightness : '10';
+      document.getElementById('f-bright').value = b;
+      document.getElementById('v-bright').textContent = b;
+      document.getElementById('f-nbright').value = nb;
+      document.getElementById('v-nbright').textContent = nb;
+    }
     document.getElementById('f-ndim').checked = c.nightDim !== false && c.nightDim !== 'false';
     document.getElementById('f-autocycle').checked = c.autoCycle === 'true';
     document.getElementById('f-view').value = c.viewMode || 'radar';
@@ -684,6 +701,8 @@ void ConfigurationWebServer::Initialise() {
         doc["tzOffset"] = prefs.getString("tz-offset", "0");
         doc["nightStart"] = prefs.getString("night-start", "23");
         doc["nightEnd"] = prefs.getString("night-end", "7");
+        doc["brightness"] = prefs.getString("brightness", "80");
+        doc["nightBrightness"] = prefs.getString("night-brightness", "10");
         doc["nightDim"] = prefs.getString("night-dim", "false") == "true";
         doc["autoCycle"] = prefs.getString("auto-cycle-views", "false");
         doc["viewMode"] = prefs.getString("view-mode", "radar");
@@ -772,6 +791,8 @@ void ConfigurationWebServer::Initialise() {
         TrySaveParam("tz-offset");
         TrySaveParam("night-start");
         TrySaveParam("night-end");
+        TrySaveParam("brightness");
+        TrySaveParam("night-brightness");
         TrySaveParam("view-mode");
         TrySaveParam("theme");
         TrySaveParam("units");
